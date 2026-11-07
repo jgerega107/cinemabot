@@ -8,7 +8,8 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: cinema-${{ github.ref }}
+  # Serialize branch/tag builds of the same commit before checking its image.
+  group: cinema-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   test:
@@ -69,14 +70,35 @@ jobs:
             type=sha,format=long,prefix=sha-
             type=semver,pattern={{version}}
             type=raw,value=main,enable={{is_default_branch}}
+      - name: Check immutable commit image
+        id: commit
+        if: github.event_name != 'pull_request'
+        run: |
+          if docker buildx imagetools inspect "$IMAGE:sha-$GITHUB_SHA" > /tmp/manifest.txt 2> /tmp/manifest.err; then
+            echo 'exists=true' >> "$GITHUB_OUTPUT"
+          else
+            # Authentication or registry outages must not trigger replacement.
+            if [[ "$(cat /tmp/manifest.err)" != *"not found"* ]]; then
+              cat /tmp/manifest.err
+              exit 1
+            fi
+            echo 'exists=false' >> "$GITHUB_OUTPUT"
+          fi
       - uses: docker/build-push-action@v6
+        if: steps.commit.outputs.exists != 'true'
         with:
           context: .
           platforms: linux/amd64
           load: true
           tags: cinema:test
+          labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      - name: Load existing commit image for verification
+        if: steps.commit.outputs.exists == 'true'
+        run: |
+          docker pull --platform linux/amd64 "$IMAGE:sha-$GITHUB_SHA"
+          docker tag "$IMAGE:sha-$GITHUB_SHA" cinema:test
       - name: Smoke test the exact image without upstream credentials
         run: |
           docker run -d --name cinema-smoke --network none --read-only --tmpfs /tmp:size=512m --env-file .env.example cinema:test
@@ -102,13 +124,23 @@ jobs:
           printf '{"command":"close"}\n' | docker exec -i cinema-smoke python -m cinema.worker
           docker rm -f cinema-smoke
       - uses: docker/build-push-action@v6
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && steps.commit.outputs.exists != 'true'
         with:
           context: .
           platforms: linux/amd64
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
+          tags: ${{ env.IMAGE }}:sha-${{ github.sha }}
           labels: ${{ steps.meta.outputs.labels }}
           provenance: true
           sbom: true
           cache-from: type=gha
+      - name: Publish branch and release aliases
+        if: github.event_name != 'pull_request'
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          while IFS= read -r tag; do
+            if [[ "$tag" != "$IMAGE:sha-$GITHUB_SHA" ]]; then
+              docker buildx imagetools create --tag "$tag" "$IMAGE:sha-$GITHUB_SHA"
+            fi
+          done <<< "$TAGS"
