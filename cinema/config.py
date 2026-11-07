@@ -1,3 +1,4 @@
+import ipaddress
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -23,6 +24,21 @@ class Settings(BaseSettings):
     session_seconds: int = Field(default=28800, ge=60, le=86400)
     static_dir: Path = Path("web/dist")
     allow_insecure_local: bool = False
+    trusted_proxy_cidrs: str = ""
+
+    @field_validator("trusted_proxy_cidrs")
+    @classmethod
+    def proxies(cls, value: str) -> str:
+        for network in value.split(","):
+            if network.strip():
+                parsed = ipaddress.ip_network(network.strip(), strict=False)
+                if parsed.prefixlen == 0:
+                    raise ValueError("Trust only the actual reverse proxy addresses, not the entire internet")
+        return value
+
+    @property
+    def proxy_networks(self):
+        return [ipaddress.ip_network(x.strip(), strict=False) for x in self.trusted_proxy_cidrs.split(",") if x.strip()]
 
     @field_validator("public_origin", "fluxer_origin")
     @classmethod

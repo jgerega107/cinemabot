@@ -24,9 +24,11 @@ jobs:
           node-version: '24'
           cache: npm
           cache-dependency-path: web/package-lock.json
+      - name: Check builder security baseline
+        run: node -e 'const v=process.versions.node.split(".").map(Number); if(v[0]!==24 || v[1]<22 || (v[1]===22 && v[2]<1)) process.exit(1)'
       - run: pip install -r requirements-dev.txt
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg
-      - run: ruff check cinema tests
+      - run: ruff check cinema tests scripts
       - run: python -m pytest -q
       - run: npm ci && npm run build
         working-directory: web
@@ -124,7 +126,8 @@ jobs:
               await video.aclose()
           asyncio.run(check())
           PY
-          printf '{"command":"close"}\n' | docker exec -i cinema-smoke python -m cinema.worker
+          docker exec -i cinema-smoke python - < scripts/check_runtime.py
+          printf '{"command":"close"}\n' | docker exec -i cinema-smoke python -m cinema.worker_entry
           docker rm -f cinema-smoke
       - uses: docker/build-push-action@v6
         if: github.event_name != 'pull_request' && steps.commit.outputs.exists != 'true'

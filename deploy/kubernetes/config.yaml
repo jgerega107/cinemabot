@@ -3,6 +3,8 @@ kind: ConfigMap
 metadata:
   name: cinema
 data:
+  # Configure only the actual trusted ingress proxy addresses/CIDRs.
+  TRUSTED_PROXY_CIDRS: ""
   PUBLIC_ORIGIN: https://cinema.example.com
   FLUXER_ORIGIN: https://chat.example.com
   FLUXER_GUILD_ID: "1234567890123456789"

@@ -3,19 +3,22 @@ import contextlib
 import json
 import os
 import sys
+import tempfile
 from collections.abc import Callable
 
 from cinema.errors import Problem
 
 
 class Supervisor:
-    def __init__(self, on_event: Callable[[dict], None]):
+    def __init__(self, on_event: Callable[[dict], None], *, local_file=None):
         self.on_event = on_event
         self.process = None
         self.reader = None
         self.connected = None
         self.closing = False
         self.epoch = 0
+        self.local_file = local_file
+        self.scratch = None
 
     async def connect(self, grant: dict, bitrate: int):
         await self.close()
@@ -25,8 +28,11 @@ class Supervisor:
         env = {k: v for k, v in os.environ.items() if k in {
             "PATH", "LANG", "LC_ALL", "TMPDIR", "PYTHONPATH", "LD_LIBRARY_PATH", "SSL_CERT_FILE",
             "SSL_CERT_DIR", "LIBVA_DRIVER_NAME", "LIBVA_DRIVERS_PATH", "XDG_RUNTIME_DIR"}}
+        self.scratch = tempfile.TemporaryDirectory(prefix="cinema-worker-")
+        env.update(CINEMA_WORKER_TMP=self.scratch.name, TMPDIR=self.scratch.name, PYTHONDONTWRITEBYTECODE="1")
+        args = ["--local-file", str(self.local_file)] if self.local_file else []
         self.process = await asyncio.create_subprocess_exec(
-            sys.executable, "-m", "cinema.worker", stdin=asyncio.subprocess.PIPE,
+            sys.executable, "-m", "cinema.worker_entry", *args, stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL, env=env, limit=65536)
         self.reader = asyncio.create_task(self._read())
         await self.send("connect", grant=grant, bitrate=bitrate)
@@ -77,3 +83,6 @@ class Supervisor:
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await self.reader
         self.process = self.reader = None
+        if self.scratch:
+            self.scratch.cleanup()
+            self.scratch = None

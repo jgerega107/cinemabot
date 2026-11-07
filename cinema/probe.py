@@ -12,17 +12,22 @@ from cinema.config import Settings
 from cinema.fluxer import Fluxer
 from cinema.jellyfin import Jellyfin
 from cinema.media import Decoder
+from cinema.sandbox import protect_process
+from cinema.security import reject_brotli
 from cinema.supervisor import Supervisor
 
 
 async def probe(args):
+    protect_process()
     config = Settings(_env_file=args.env_file)
     config.validate_transport()
     events = asyncio.Queue()
-    worker = Supervisor(events.put_nowait)
+    local_file = await asyncio.to_thread(Path(args.file).resolve) if args.file else None
+    worker = Supervisor(events.put_nowait, local_file=local_file)
     source = None
     rows = []
-    async with httpx.AsyncClient(timeout=20, follow_redirects=False) as http:
+    async with httpx.AsyncClient(timeout=20, follow_redirects=False, headers={"Accept-Encoding": "gzip, deflate"},
+                                event_hooks={"response": [reject_brotli]}) as http:
         fluxer, jellyfin = Fluxer(config, http), Jellyfin(config, http)
         ready = asyncio.Event()
         fluxer.on_change = lambda: ready.set() if fluxer.ready else ready.clear()

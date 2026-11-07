@@ -76,13 +76,15 @@ def test_volume_is_stereo_safe_and_does_not_overflow():
 
 
 def test_worker_entrypoint_binds_room_to_running_loop(monkeypatch):
-    from cinema.worker import main
+    from cinema.worker_entry import main
 
     async def inspect_room(worker):
         assert worker.room._loop is asyncio.get_running_loop()
 
     monkeypatch.setattr(Worker, "run", inspect_room)
-    monkeypatch.setattr("cinema.worker.logging.disable", lambda *_: None)
+    monkeypatch.setattr("cinema.worker_entry.logging.disable", lambda *_: None)
+    monkeypatch.setattr("cinema.worker_entry.confine_worker", lambda *_: None)
+    monkeypatch.setattr("sys.argv", ["cinema.worker_entry"])
     main()
 
 

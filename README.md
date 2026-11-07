@@ -27,6 +27,7 @@ Browser ──sign-in / controls──> Python backend
 3. Install the bot into the community. Grant **View Channel**, **Connect**, **Speak**, and **Stream** in the intended voice channels.
 4. Copy `.env.example` to a private `.env`, then set the instance origin, application credentials, and community ID. Optionally restrict `FLUXER_CHANNEL_IDS` to a comma-separated list.
 5. Forward HTTPS for `PUBLIC_ORIGIN` to the service's HTTP port 8080. Preserve the browser's `Origin` header. Disable proxy buffering for `/api/events` and allow long-lived responses.
+6. Set `TRUSTED_PROXY_CIDRS` to the actual proxy peer addresses seen by the container. Forward or append `X-Forwarded-For` at that proxy. The default trusts no forwarded headers, so users behind a proxy share its IP limit until configured. Do not trust every address or an untrusted network. Keep the container's `--no-proxy-headers` Uvicorn flag; the application validates the proxy chain itself.
 
 OAuth uses `identify`, authorization codes, state, and S256 PKCE. Browsers receive an eight-hour HTTP-only session cookie. No Fluxer or Jellyfin tokens are returned to the browser. Every control checks current community membership and voice presence on the server. Browsing requires community membership; controlling the active session requires being in the same voice channel as the bot.
 
@@ -70,6 +71,8 @@ docker compose -f compose.yaml -f deploy/compose.intel.yaml up -d --build
 ```
 
 The image includes Intel VAAPI drivers. Device access permits the LiveKit SDK's encoder selection; it is **not proof** that a particular wheel/driver/device is accelerating H.264. Verify with the probe and GPU monitoring. Jellyfin's own QSV configuration only accelerates Jellyfin's transcode stage. Software encoding remains available and requires adequate CPU for 1080p.
+
+The Linux worker requires a kernel with Landlock enabled (5.13 or newer) and a container runtime that permits Landlock/seccomp setup. It fails closed when confinement cannot be installed. The worker receives read access to runtime libraries, its own process information, optional GPU devices, and an explicitly selected local probe file. It can write only its private temporary directory. It cannot inspect backend memory, signal other processes, launch programs, or connect to Unix-domain services. Outbound IP networking is required for Jellyfin and Fluxer; the worker still possesses its scoped voice grant and dedicated Jellyfin media credentials. macOS development does not provide this Linux confinement.
 
 ## Kubernetes
 
@@ -131,11 +134,19 @@ npx playwright install chromium
 npm test
 ```
 
-For local UI development, set `PUBLIC_ORIGIN=http://localhost:5173` and `ALLOW_INSECURE_LOCAL=true`, and register `http://localhost:5173/auth/callback` on the development Fluxer application. Run `.venv/bin/uvicorn cinema.app:create_app --factory --host 127.0.0.1 --port 8080 --no-access-log` from the project root, then `npm run dev` in `web`. Open the UI at `localhost:5173`. Vite proxies `/api` and `/auth` to the backend. The insecure option is for an isolated development environment only.
+For local UI development, set `PUBLIC_ORIGIN=http://localhost:5173` and `ALLOW_INSECURE_LOCAL=true`, and register `http://localhost:5173/auth/callback` on the development Fluxer application. Run `.venv/bin/uvicorn cinema.app:create_app --factory --host 127.0.0.1 --port 8080 --no-access-log --no-proxy-headers` from the project root, then `npm run dev` in `web`. Open the UI at `localhost:5173`. Vite proxies `/api` and `/auth` to the backend. The insecure option is for an isolated development environment only.
 
 Browser tests use clearly scoped mock catalog/events and exercise desktop/mobile layouts and controls; they do not establish live Fluxer compatibility. Python tests also generate real media to exercise decoding, stereo audio, timeline preservation, seeks, and pause timing.
 
 ## Release and operations
+
+Sign-in starts use signed, short-lived opaque cookies without allocating a shared pending-login pool. PKCE verifiers are derived server-side; successful callback attempts are single-use. Authentication requests allow a burst of 10 per client IP, refilling at 20/minute, with an additional global budget. IPv6 clients share a /64 budget. Playback requests allow a burst of 10 per user, refilling at 60/minute; reads allow 80, refilling at 240/minute. Limits are checked before upstream authorization, and concurrent requests are bounded separately. HTTP 429 responses include `Retry-After`. These limits reduce application-level abuse; an internet-facing reverse proxy still needs ordinary connection and traffic controls.
+
+Authenticated catalog and artwork responses are cached server-side for up to 10 seconds, with separate 4 MiB/32 MiB serialized-data budgets and entry caps. Membership is still checked on protected routes; playback resolution always rechecks Jellyfin directly. Library metadata permission changes can take up to that cache TTL to disappear. Request bodies are limited to 16 KiB and five seconds; compressed request bodies and Brotli upstream responses are rejected before decoding.
+
+The production web server is Python and serves static React assets. It has no Node runtime, Next.js, or React Server Components. The builder is pinned to a Node release containing the CVE-2026-111497 (Node2Shell/Brotli) fix. Image checks verify absence of Node and optional Python Brotli modules, the Debian Brotli fix if that library is installed, and actual worker confinement. See [security notes](docs/SECURITY.md) for the advisory links and remaining boundaries.
+
+Dependabot checks Python, npm, Docker, and GitHub Actions weekly. Repository security alerts and security-update PRs are enabled separately on GitHub. Updates require review and passing CI; they do not auto-merge or deploy to your servers.
 
 The GitHub Actions workflow tests Python, builds the web UI, runs browser tests, renders deployment manifests, builds the Linux amd64 container, and smoke-tests its health endpoint and native media libraries without network access. Successful pushes to `main` publish to `ghcr.io/<repository-owner>/<repository-name>` with a full `sha-<commit>` tag and `main`; `vX.Y.Z` tags also publish `X.Y.Z`. Existing commit images are reused, and version tags point to those images instead of rebuilding or replacing them. Use the repository name `jellyfin-fluxer-bot` for the planned image name. The workflow uses `GITHUB_TOKEN` with package-write permission.
 

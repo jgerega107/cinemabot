@@ -5,7 +5,6 @@ Never log source URLs, LiveKit grants, native decoder exceptions, or inherited s
 import asyncio
 import contextlib
 import json
-import logging
 import sys
 import time
 
@@ -216,17 +215,5 @@ async def run_worker():
     await Worker().run()
 
 
-def main():
-    logging.disable(logging.CRITICAL)
-    # Suppress FFmpeg diagnostics: errors can embed authenticated source URLs.
-    import av
-    av.logging.set_level(av.logging.PANIC)
-    try:
-        asyncio.run(run_worker())
-    except Exception:
-        emit("fatal", message="Media worker could not connect or initialize.")
-        sys.exit(1)
-
-
 if __name__ == "__main__":
-    main()
+    raise SystemExit("Start the confined worker with python -m cinema.worker_entry")

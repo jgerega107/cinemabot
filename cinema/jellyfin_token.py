@@ -15,11 +15,14 @@ def main():
     password = getpass.getpass("Jellyfin password: ")
     header = 'MediaBrowser Client="Fluxer Cinema", Device="Cinema", DeviceId="jellyfin-fluxer-cinema", Version="0.1.0"'
     try:
-        response = httpx.post(args.url.rstrip("/") + "/Users/AuthenticateByName",
-                              headers={"Authorization": header}, json={"Username": user, "Pw": password},
-                              timeout=20, follow_redirects=False)
-        response.raise_for_status()
-        result = response.json()
+        with httpx.stream("POST", args.url.rstrip("/") + "/Users/AuthenticateByName",
+                          headers={"Authorization": header, "Accept-Encoding": "identity"},
+                          json={"Username": user, "Pw": password}, timeout=20, follow_redirects=False) as response:
+            if response.headers.get("content-encoding", "identity").lower() != "identity":
+                raise ValueError("Compressed authentication responses are not accepted")
+            response.raise_for_status()
+            response.read()
+            result = response.json()
         if result["User"].get("Policy", {}).get("IsAdministrator"):
             raise ValueError("Use a dedicated non-admin Jellyfin user")
         content = f"JELLYFIN_USER_ID={result['User']['Id']}\nJELLYFIN_ACCESS_TOKEN={result['AccessToken']}\n"
