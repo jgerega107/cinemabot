@@ -60,6 +60,8 @@ class Jellyfin:
         self.ready = False
 
     async def request(self, method: str, path: str, **kwargs):
+        if path != "/Users/Me" and not self.ready:
+            raise Problem(503, "Jellyfin account is not verified. Check the dedicated non-admin user credentials.")
         response = await self.http.request(method, self.config.jellyfin_url + path,
                                            headers=self.headers, **kwargs)
         if response.status_code in {401, 403}:
@@ -72,12 +74,18 @@ class Jellyfin:
         return response.json() if response.content else None
 
     async def check(self) -> None:
-        user = await self.request("GET", "/Users/Me")
-        if user["Id"].replace("-", "") != self.config.jellyfin_user_id.replace("-", ""):
-            raise Problem(503, "Jellyfin token and configured user ID do not match.")
-        if user.get("Policy", {}).get("IsAdministrator"):
-            raise Problem(503, "Use a dedicated non-admin Jellyfin account.")
-        self.ready = True
+        verified = False
+        try:
+            user = await self.request("GET", "/Users/Me")
+            if user["Id"].replace("-", "") != self.config.jellyfin_user_id.replace("-", ""):
+                raise Problem(503, "Jellyfin token and configured user ID do not match.")
+            if user.get("Policy", {}).get("IsAdministrator"):
+                raise Problem(503, "Use a dedicated non-admin Jellyfin account.")
+            if not self.ready:
+                log.info("Jellyfin connected; dedicated user verified")
+            verified = True
+        finally:
+            self.ready = verified
 
     async def libraries(self) -> list:
         data = await self.request("GET", f"/Users/{self.config.jellyfin_user_id}/Views")

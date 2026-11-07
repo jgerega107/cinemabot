@@ -149,6 +149,7 @@ class Fluxer:
         self.connection_id = self.channel_id = None
 
     def dispatch(self, event: str, data: dict) -> None:
+        was_ready = self.ready
         if event == "READY":
             self.online = True
             # Always re-identify on reconnect: never authorize against an old voice snapshot.
@@ -182,6 +183,8 @@ class Fluxer:
                 self.channels[data["id"]] = data
             elif event == "CHANNEL_DELETE":
                 self.channels.pop(data["id"], None)
+        if self.ready and not was_ready:
+            log.info("Fluxer Gateway connected; community membership synchronized")
         self.on_change()
 
     def _voice(self, data: dict) -> None:
@@ -244,6 +247,8 @@ class Fluxer:
                     heartbeat.cancel()
                     with contextlib.suppress(asyncio.CancelledError, Exception):
                         await heartbeat
+                if self.online:
+                    log.info("Fluxer Gateway disconnected; refreshing membership before controls resume")
                 self.socket = None
                 self.online = self.synced = False
                 self.states.clear()

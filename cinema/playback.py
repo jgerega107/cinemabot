@@ -184,6 +184,9 @@ class Playback:
 
     async def _report(self):
         if self.source:
+            if self.metrics:
+                log.info("Publisher performance: state=%s fps=%s queued_av_drift_ms=%s", self.state,
+                         self.metrics.get("fps"), self.metrics.get("av_drift_ms"))
             try:
                 await self.jellyfin.report(self.source, "progress", self.position, self.state == "paused")
             except Exception:
@@ -216,6 +219,7 @@ class Playback:
             self.error = ""
 
     async def _fail(self, message: str):
+        log.warning("Playback failed: %s", message)
         self.generation += 1
         self.error = message
         self.state = "error"

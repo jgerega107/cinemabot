@@ -21,6 +21,13 @@ ItemId = Annotated[str, Path(pattern=r"^[a-fA-F0-9-]{32,36}$")]
 
 
 def create_app(config: Settings | None = None, *, start_services: bool = True) -> FastAPI:
+    cinema_log = logging.getLogger("cinema")
+    if not cinema_log.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
+        cinema_log.addHandler(handler)
+    cinema_log.setLevel(logging.INFO)
+    cinema_log.propagate = False
     config = config or Settings()
     config.validate_transport()
     http = httpx.AsyncClient(timeout=20, follow_redirects=False)

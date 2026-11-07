@@ -30,6 +30,7 @@ async def test_playback_negotiation_and_private_urls(config, subtitle, transcode
         return httpx.Response(200, json=ITEM)
     async with httpx.AsyncClient(transport=httpx.MockTransport(remote)) as http:
         jellyfin = Jellyfin(config, http)
+        jellyfin.ready = True
         source = await jellyfin.resolve(ID, 10, 1, subtitle)
     body = json.loads(requests[-1].content)
     assert body["EnableDirectPlay"] is not transcode
@@ -43,10 +44,12 @@ async def test_playback_negotiation_and_private_urls(config, subtitle, transcode
 
 async def test_disallowed_or_missing_tracks_rejected_before_playback(config):
     async with httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(200, json=ITEM))) as http:
+        jellyfin = Jellyfin(config, http)
+        jellyfin.ready = True
         with pytest.raises(Problem, match="audio"):
-            await Jellyfin(config, http).resolve(ID, 0, 200, -1)
+            await jellyfin.resolve(ID, 0, 200, -1)
         with pytest.raises(Problem, match="Seek"):
-            await Jellyfin(config, http).resolve(ID, 500, 1, -1)
+            await jellyfin.resolve(ID, 500, 1, -1)
 
 
 def test_base_paths_and_external_sources(config):
@@ -60,13 +63,36 @@ def test_base_paths_and_external_sources(config):
         jf.media_url("//attacker.test/media")
 
 
-async def test_admin_tokens_and_mismatched_users_rejected(config):
+@pytest.mark.parametrize("admin,uid,message", [(True, "a" * 32, "non-admin"), (False, "b" * 32, "do not match")])
+async def test_admin_tokens_and_mismatched_users_rejected(config, admin, uid, message):
     async with httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(200, json={
-            "Id": config.jellyfin_user_id, "Policy": {"IsAdministrator": True}}))) as http:
+            "Id": uid, "Policy": {"IsAdministrator": admin}}))) as http:
         jf = Jellyfin(config, http)
-        with pytest.raises(Problem, match="non-admin"):
+        jf.ready = True  # A previously accepted account may be changed by an administrator.
+        with pytest.raises(Problem, match=message):
             await jf.check()
         assert not jf.ready
+        with pytest.raises(Problem, match="not verified"):
+            await jf.libraries()
+
+
+async def test_catalog_and_playback_wait_for_account_verification(config):
+    requests = []
+    def upstream(request):
+        requests.append(request.url.path)
+        if request.url.path == "/Users/Me":
+            return httpx.Response(200, json={"Id": config.jellyfin_user_id, "Policy": {"IsAdministrator": False}})
+        return httpx.Response(200, json={"Items": []})
+    async with httpx.AsyncClient(transport=httpx.MockTransport(upstream)) as http:
+        jf = Jellyfin(config, http)
+        with pytest.raises(Problem, match="not verified"):
+            await jf.libraries()
+        with pytest.raises(Problem, match="not verified"):
+            await jf.resolve(ID, 0, None, -1)
+        assert not requests
+        await jf.check()
+        assert await jf.libraries() == []
+        assert len(requests) == 2
 
 
 async def test_hdr_reported_only_by_playback_info_forces_transcode(config):
@@ -79,6 +105,8 @@ async def test_hdr_reported_only_by_playback_info_forces_transcode(config):
                 "MediaStreams": [{"Type": "Video", "VideoRangeType": "HDR10"}]}]})
         return httpx.Response(200, json=ITEM)
     async with httpx.AsyncClient(transport=httpx.MockTransport(remote)) as http:
-        source = await Jellyfin(config, http).resolve(ID, 0, None, -1)
+        jellyfin = Jellyfin(config, http)
+        jellyfin.ready = True
+        source = await jellyfin.resolve(ID, 0, None, -1)
     assert len(bodies) == 2 and bodies[-1]["EnableDirectPlay"] is False
     assert source.transcoded and "m3u8" in source.url
