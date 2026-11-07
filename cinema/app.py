@@ -109,8 +109,8 @@ def create_app(config: Settings | None = None, *, start_services: bool = True) -
                             burst=10 if category == "action" else 80)
                 limits.rate((category, "global"), per_minute=300 if category == "action" else 1200,
                             burst=20 if category == "action" else 160)
-                async with limits.slot(category, user_id, total=4 if category == "action" else 16,
-                                       individual=1 if category == "action" else 4):
+                async with limits.slot(category, user_id, total=4 if category == "action" else 32,
+                                       individual=1 if category == "action" else 16):
                     response = await dispatch()
             else:
                 response = await dispatch()
