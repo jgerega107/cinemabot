@@ -75,6 +75,17 @@ def test_volume_is_stereo_safe_and_does_not_overflow():
     assert np.frombuffer(scale_audio(samples, 50), dtype=np.int16).tolist() == [16383, -16384, 5000, -5000]
 
 
+def test_worker_entrypoint_binds_room_to_running_loop(monkeypatch):
+    from cinema.worker import main
+
+    async def inspect_room(worker):
+        assert worker.room._loop is asyncio.get_running_loop()
+
+    monkeypatch.setattr(Worker, "run", inspect_room)
+    monkeypatch.setattr("cinema.worker.logging.disable", lambda *_: None)
+    main()
+
+
 async def test_worker_pause_and_clock_with_real_decode(clip, monkeypatch):
     events = []
     monkeypatch.setattr("cinema.worker.emit", lambda event, **kw: events.append({"event": event, **kw}))

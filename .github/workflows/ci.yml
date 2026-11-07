@@ -85,6 +85,21 @@ jobs:
             sleep 1
           done
           docker exec cinema-smoke python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=2)"
+          docker exec -i cinema-smoke python - <<'PY'
+          import asyncio
+          import os
+          import av
+          from livekit import rtc
+          async def check():
+              assert os.getuid() == 10001
+              assert av.Codec('h264', 'r').is_decoder
+              audio = rtc.AudioSource(48000, 2)
+              video = rtc.VideoSource(320, 180)
+              await audio.aclose()
+              await video.aclose()
+          asyncio.run(check())
+          PY
+          printf '{"command":"close"}\n' | docker exec -i cinema-smoke python -m cinema.worker
           docker rm -f cinema-smoke
       - uses: docker/build-push-action@v6
         if: github.event_name != 'pull_request'

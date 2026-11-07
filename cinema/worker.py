@@ -211,13 +211,18 @@ class Worker:
                     await source.aclose()
 
 
+async def run_worker():
+    # Room binds its callbacks and futures to the current loop at construction.
+    await Worker().run()
+
+
 def main():
     logging.disable(logging.CRITICAL)
     # Suppress FFmpeg diagnostics: errors can embed authenticated source URLs.
     import av
     av.logging.set_level(av.logging.PANIC)
     try:
-        asyncio.run(Worker().run())
+        asyncio.run(run_worker())
     except Exception:
         emit("fatal", message="Media worker could not connect or initialize.")
         sys.exit(1)
