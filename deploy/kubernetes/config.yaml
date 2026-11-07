@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cinema
+data:
+  PUBLIC_ORIGIN: https://cinema.example.com
+  FLUXER_ORIGIN: https://chat.example.com
+  FLUXER_GUILD_ID: "1234567890123456789"
+  FLUXER_CHANNEL_IDS: ""
+  FLUXER_CLIENT_ID: replace-me
+  JELLYFIN_URL: http://jellyfin.jellyfin.svc.cluster.local:8096
+  JELLYFIN_USER_ID: "00000000000000000000000000000000"
+  VIDEO_BITRATE: "6000000"

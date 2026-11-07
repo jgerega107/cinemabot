@@ -1,0 +1,26 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../kubernetes
+patches:
+  - target:
+      kind: Deployment
+      name: cinema
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: cinema
+      spec:
+        template:
+          spec:
+            securityContext:
+              supplementalGroups: [992]
+            containers:
+              - name: cinema
+                env:
+                  - name: LIBVA_DRIVER_NAME
+                    value: iHD
+                resources:
+                  limits:
+                    gpu.intel.com/i915: 1

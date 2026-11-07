@@ -1,0 +1,9 @@
+# docker compose -f compose.yaml -f deploy/compose.intel.yaml up -d
+services:
+  cinema:
+    devices:
+      - /dev/dri:/dev/dri
+    group_add:
+      - "${RENDER_GID:?Set RENDER_GID to the host render-device group}"
+    environment:
+      LIBVA_DRIVER_NAME: iHD
