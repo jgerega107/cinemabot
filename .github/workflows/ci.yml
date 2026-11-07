@@ -8,8 +8,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  # Serialize branch/tag builds of the same commit before checking its image.
-  group: cinema-${{ github.event.pull_request.number || github.sha }}
+  group: cinema-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   test:
@@ -48,6 +47,10 @@ jobs:
   image:
     needs: test
     runs-on: ubuntu-latest
+    # Branch/tag runs must not race when first publishing the same commit.
+    concurrency:
+      group: cinema-image-${{ github.sha }}
+      cancel-in-progress: false
     permissions:
       contents: read
       packages: write
