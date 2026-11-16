@@ -25,6 +25,15 @@ class Settings(BaseSettings):
     static_dir: Path = Path("web/dist")
     allow_insecure_local: bool = False
     trusted_proxy_cidrs: str = ""
+    allowed_link_providers: str = "youtube"
+
+    @field_validator("allowed_link_providers")
+    @classmethod
+    def link_providers(cls, value: str) -> str:
+        providers = {part.strip().lower() for part in value.split(",") if part.strip()}
+        if providers - {"youtube"}:
+            raise ValueError("ALLOWED_LINK_PROVIDERS currently supports only youtube; empty disables links")
+        return ",".join(sorted(providers))
 
     @field_validator("trusted_proxy_cidrs")
     @classmethod
@@ -68,3 +77,4 @@ class Settings(BaseSettings):
     @property
     def channel_ids(self) -> set[str]:
         return {x.strip() for x in self.fluxer_channel_ids.split(",") if x.strip()}
+
