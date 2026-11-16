@@ -282,6 +282,33 @@ async def test_ambiguous_request_rejected(player, youtube):
     youtube.items.assert_not_awaited()
 
 
+async def test_disabled_links_keep_jellyfin_available(player, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    player.config.allowed_link_providers = ""
+    restricted = Playback(player.config, player.fluxer, player.jellyfin, Media)
+    extract = AsyncMock()
+    monkeypatch.setattr(restricted.youtube, "extract", extract)
+    await restricted.action(USER, Action(action="play", item_id=ID))
+    current = restricted.current
+    with pytest.raises(Problem, match="disabled"):
+        await restricted.action(USER, Action(action="play", url="https://youtu.be/BaW_jenozKc"))
+    assert restricted.current is current and restricted.state == "loading"
+    extract.assert_not_awaited()
+
+
+@pytest.mark.parametrize("url", ["https://vimeo.com/123", "https://youtube.com.evil.test/watch?v=BaW_jenozKc"])
+async def test_non_youtube_action_rejected_before_extraction(player, monkeypatch, url):
+    from unittest.mock import AsyncMock
+
+    extract = AsyncMock()
+    monkeypatch.setattr(player.youtube, "extract", extract)
+    with pytest.raises(Problem, match="YouTube video or playlist link"):
+        await player.action(USER, Action(action="play", url=url))
+    extract.assert_not_awaited()
+    assert player.current is None and not player.queue
+
+
 @pytest.mark.parametrize("position", [60, 61])
 @pytest.mark.parametrize("state", ["playing", "paused"])
 async def test_invalid_youtube_seek_preserves_playback(player, monkeypatch, position, state):
