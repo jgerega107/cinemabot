@@ -48,6 +48,13 @@ def canonical_url(value: str, playlist: bool = True) -> str:
 
 
 class YouTube:
+    def __init__(self, *, enabled: bool = True):
+        self.enabled = enabled
+
+    def require_enabled(self):
+        if not self.enabled:
+            raise Problem(403, "YouTube link requests are disabled by the administrator.")
+
     async def extract(self, url: str, *, flat: bool) -> dict:
         # No shell, inherited credentials, user configuration, plugins, or downloads.
         env = {k: v for k, v in os.environ.items() if k in {
@@ -95,6 +102,7 @@ class YouTube:
             scratch.cleanup()
 
     async def items(self, url: str) -> list[dict]:
+        self.require_enabled()
         info = await self.extract(canonical_url(url), flat=True)
         entries = info.get("entries") if "entries" in info else [info]
         if not isinstance(entries, list) or len(entries) > 250:
@@ -115,6 +123,7 @@ class YouTube:
         return rows
 
     async def resolve(self, item_id: str, position: float, audio, subtitle: int) -> Source:
+        self.require_enabled()
         if audio is not None or subtitle != -1:
             raise Problem(400, "YouTube uses its default audio and does not support subtitle selection.")
         info = await self.extract(canonical_url("https://www.youtube.com/watch?v=" + item_id), flat=False)
