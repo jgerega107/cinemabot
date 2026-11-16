@@ -93,6 +93,8 @@ function App() {
   const [page, setPage] = useState(0);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
+  const [catalogError, setCatalogError] = useState('');
+  const [catalogRetry, setCatalogRetry] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
@@ -139,17 +141,17 @@ function App() {
   useEffect(() => {
     if (!user) return;
     const abort = new AbortController();
-    setLoading(true);
+    setLoading(true); setItems([]); setTotal(0); setCatalogError('');
     const timer = setTimeout(() => {
       const params = new URLSearchParams({ q: query, start: String(page * 40) });
       if (parent) params.set('parent', parent.id);
       api<{ items: Item[]; total: number }>(`/api/items?${params}`, undefined, abort.signal)
-        .then(data => { setItems(data.items); setTotal(data.total); })
-        .catch(e => { if (e.name !== 'AbortError') setError(e.message); })
+        .then(data => { if (!abort.signal.aborted) { setItems(data.items); setTotal(data.total); } })
+        .catch(e => { if (!abort.signal.aborted) setCatalogError(e.message); })
         .finally(() => { if (!abort.signal.aborted) setLoading(false); });
     }, query ? 250 : 0);
     return () => { clearTimeout(timer); abort.abort(); };
-  }, [user?.id, query, parent?.id, page]);
+  }, [user?.id, query, parent?.id, page, catalogRetry]);
 
   useEffect(() => {
     if (selected && dialogRef.current && !dialogRef.current.open) dialogRef.current.showModal();
@@ -170,7 +172,11 @@ function App() {
 
   async function open(item: Item) {
     if (['Series', 'Season', 'CollectionFolder'].includes(item.type)) {
-      setCrumbs(c => [...c, item]); setQuery(''); setPage(0); return;
+      setCrumbs(c => {
+        const existing = c.findIndex(crumb => crumb.id === item.id);
+        return existing < 0 ? [...c, item] : c.slice(0, existing + 1);
+      });
+      setQuery(''); setPage(0); return;
     }
     try { setSelected(await api<Item>(`/api/items/${item.id}`)); }
     catch (e) { setError((e as Error).message); }
@@ -210,7 +216,7 @@ function App() {
             </div>
             {parent && <nav className="breadcrumbs" aria-label="Library navigation"><button onClick={() => { setCrumbs([]); setPage(0); }}>Library</button>{crumbs.map((c, i) => <React.Fragment key={c.id}><ChevronRight size={13} /><button onClick={() => { setCrumbs(crumbs.slice(0, i + 1)); setPage(0); }}>{c.title}</button></React.Fragment>)}</nav>}
             <div className="section-line"><h2>{query ? `Results for “${query}”` : parent?.title || 'Explore your library'}</h2><span>{total} titles</span></div>
-            {loading ? <div className="poster-grid" aria-label="Loading titles">{Array.from({ length: 8 }, (_, i) => <div className="skeleton" key={i} />)}</div> : items.length ?
+            {catalogError ? <div className="empty-catalog" role="alert"><h3>Could not load titles</h3><p>{catalogError}</p><button className="button secondary" onClick={() => setCatalogRetry(n => n + 1)}>Retry loading titles</button></div> : loading ? <div className="poster-grid" aria-label="Loading titles">{Array.from({ length: 8 }, (_, i) => <div className="skeleton" key={i} />)}</div> : items.length ?
               <div className="poster-grid">{items.map(item => <button className="title-card" key={item.id} onClick={() => open(item)}><Poster item={item} /><strong>{item.title}</strong><span>{item.type === 'Series' ? 'TV series' : item.type === 'Season' ? 'Season' : item.type === 'Episode' ? `Episode ${item.episode ?? ''}` : item.year ?? 'Movie'}{item.duration > 0 ? ` · ${Math.round(item.duration / 60)} min` : ''}</span></button>)}</div> :
               <div className="empty-catalog"><Search size={30} /><h3>{query ? 'No matching titles' : 'Nothing here yet'}</h3><p>{query ? 'Try another title or browse a different library.' : 'Titles shared by your Jellyfin account will appear here.'}</p></div>}
             {total > 40 && <div className="pagination"><button className="button secondary" disabled={!page} onClick={() => setPage(page - 1)}><ArrowLeft size={16} />Previous</button><span>Page {page + 1} of {Math.ceil(total / 40)}</span><button className="button secondary" disabled={(page + 1) * 40 >= total} onClick={() => setPage(page + 1)}>Next<ArrowRight size={16} /></button></div>}
