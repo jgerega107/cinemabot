@@ -10,7 +10,7 @@ const basePlayer = { current: null, queue: [], state: 'idle', position: 0, volum
 
 async function setup(page: Page, options: { loggedIn?: boolean; control?: boolean; playing?: boolean } = {}) {
   const state: any = { ...basePlayer, can_control: options.control ?? true };
-  if (options.playing) Object.assign(state, { current: { ...items[0], key: 'current', requested_by: 'Alex' }, state: 'playing', position: 1340, channel_name: 'Movie night', queue: [{ ...items[2], key: 'queued', requested_by: 'Sam' }] });
+  if (options.playing) Object.assign(state, { current: { ...items[0], key: 'current', requested_by: 'Alex', requester: { id: '123', name: 'Alex', avatar: '/test-avatar.svg' } }, state: 'playing', position: 1340, channel_name: 'Movie night', queue: [{ ...items[2], key: 'queued', requested_by: 'Sam', requester: { id: '456', name: 'Sam', avatar: '/missing-avatar.png' } }] });
   const actions: any[] = [];
   // Deterministic SSE source: production uses the real same-origin EventSource endpoint.
   await page.addInitScript(({ state }) => {
@@ -25,12 +25,15 @@ async function setup(page: Page, options: { loggedIn?: boolean; control?: boolea
     }
     (window as any).EventSource = MockEvents;
   }, { state });
+  await page.route('**/test-avatar.svg', route => route.fulfill({ contentType: 'image/svg+xml',
+    body: '<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" fill="#ec4899"/></svg>' }));
+  await page.route('**/missing-avatar.png', route => route.fulfill({ status: 404, body: '' }));
   await page.route('**/api/**', async route => {
     const url = new URL(route.request().url());
     let data: any;
-    if (url.pathname === '/api/meta') data = { instance: 'https://chat.example.com' };
+    if (url.pathname === '/api/meta') data = { instance: 'https://gammy.land', branding: { name: 'Gammy Land', color: '#ec4899', icon: '/test-avatar.svg', favicon: '/test-avatar.svg' } };
     else if (url.pathname === '/api/me') {
-      if (options.loggedIn === false) return route.fulfill({ status: 401, json: { error: 'Sign in with Fluxer.' } });
+      if (options.loggedIn === false) return route.fulfill({ status: 401, json: { error: 'Sign in with Gammy Land.' } });
       data = { id: '123', name: 'Alex' };
     } else if (url.pathname === '/api/libraries') data = [{ id: id(90), title: 'Movies' }, { id: id(91), title: 'TV Shows' }];
     else if (url.pathname === '/api/items') {
@@ -41,7 +44,7 @@ async function setup(page: Page, options: { loggedIn?: boolean; control?: boolea
     else if (url.pathname === '/api/action') {
       const action = route.request().postDataJSON();
       actions.push(action);
-      if (action.action === 'play') { state.current = { ...items.find(i => i.id === action.item_id), key: 'current', requested_by: 'Alex' }; state.state = 'playing'; state.channel_name = 'Movie night'; }
+      if (action.action === 'play') { state.current = { ...items.find(i => i.id === action.item_id), key: 'current', requested_by: 'Alex', requester: { id: '123', name: 'Alex', avatar: '/test-avatar.svg' } }; state.state = 'playing'; state.channel_name = 'Movie night'; }
       if (action.action === 'pause') state.state = 'paused';
       if (action.action === 'resume') state.state = 'playing';
       if (action.action === 'tracks') Object.assign(state, { audio: action.audio, subtitle: action.subtitle });
@@ -56,7 +59,7 @@ async function setup(page: Page, options: { loggedIn?: boolean; control?: boolea
 test('sign-in screen and responsive layout', async ({ page }, testInfo) => {
   await setup(page, { loggedIn: false });
   await page.goto('/');
-  await expect(page.getByRole('link', { name: 'Sign in with Fluxer' })).toHaveAttribute('href', '/auth/login');
+  await expect(page.getByRole('link', { name: 'Sign in with Gammy Land' })).toHaveAttribute('href', '/auth/login');
   await expect(page.getByRole('heading', { name: /A little cinema/ })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.screenshot({ path: testInfo.outputPath('welcome.png'), fullPage: true });
@@ -96,4 +99,17 @@ test('shared controls and track selection', async ({ page }, testInfo) => {
   expect(actions.some(a => a.action === 'tracks' && a.subtitle === 2)).toBe(true);
   await page.screenshot({ path: testInfo.outputPath('playing.png'), fullPage: true });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+});
+
+
+test('instance theme and requester identities survive image failures', async ({ page }) => {
+  await setup(page, { playing: true });
+  await page.goto('/');
+  await expect(page).toHaveTitle('Gammy Land Cinema');
+  await expect(page.locator('.credit')).toContainText('Requested by Alex');
+  await expect(page.locator('.credit .avatar img')).toBeVisible();
+  await expect(page.locator('.queue .requester')).toContainText('Requested by Sam');
+  await expect(page.locator('.queue .avatar')).toHaveText('S');
+  expect(await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--accent').trim())).toBe('#ec4899');
+  await expect(page.locator('body')).not.toContainText('Fluxer');
 });

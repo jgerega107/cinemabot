@@ -48,6 +48,9 @@ class Playback:
         self.tasks: set[asyncio.Task] = set()
         self.closing = False
         self.events: asyncio.Queue = asyncio.Queue(maxsize=128)
+        self.fluxer.now_playing = lambda: (
+            self.current["title"] if self.current and self.state == "playing" and not self.reconnect else None
+        )
 
     def worker_event(self, message: dict) -> None:
         # Reader must never wait on the action lock: connect() waits on that same reader.
@@ -75,7 +78,7 @@ class Playback:
 
     async def action(self, user: dict, command: Action):
         async with self.lock:
-            await self.fluxer.member(user["id"])
+            requester = await self.fluxer.member(user["id"])
             channel = self.authorize(user["id"])
             action = command.action
             if action in {"add", "play"}:
@@ -87,7 +90,8 @@ class Playback:
                 if item["type"] not in PLAYABLE:
                     raise Problem(400, "Choose a movie or episode.")
                 self.authorize(user["id"], channel)
-                row = {**item, "key": str(uuid4()), "requested_by": user["name"]}
+                row = {**item, "key": str(uuid4()), "requested_by": requester["name"],
+                       "requester": {key: requester.get(key) for key in ("id", "name", "avatar")}}
                 if action == "play" or not self.current:
                     await self._load(row, channel, user_id=user["id"])
                 else:

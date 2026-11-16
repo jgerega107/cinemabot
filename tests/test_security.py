@@ -126,6 +126,26 @@ async def test_concurrency_rejects_before_another_membership_lookup(app, signed_
     assert not app.state.limits.active
 
 
+async def test_normal_parallel_poster_loading_is_admitted(app, signed_in, monkeypatch):
+    entered, release = asyncio.Event(), asyncio.Event()
+    calls = []
+    async def artwork(item):
+        calls.append(item)
+        if len(calls) == 8:
+            entered.set()
+        await release.wait()
+        return b"image", "image/webp"
+    app.state.jellyfin.ready = True
+    monkeypatch.setattr(app.state.jellyfin, "artwork", artwork)
+    tasks = [asyncio.create_task(signed_in.get(f"/api/artwork/{i:032x}")) for i in range(8)]
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+    finally:
+        release.set()
+        responses = await asyncio.gather(*tasks)
+    assert all(response.status_code == 200 for response in responses)
+
+
 def test_untrusted_forwarded_headers_cannot_reset_ip_limits():
     def request(peer, header):
         return Request({"type": "http", "client": (peer, 1), "headers": [(b"x-forwarded-for", header.encode())]})

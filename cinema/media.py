@@ -47,31 +47,37 @@ class Decoder:
 
     def frames(self):
         resampler = av.AudioResampler(format="s16", layout="stereo", rate=48000)
-        next_video = 0.0
+        next_video = 0
         last_video = None
         audio_fallback = 0.0
         streams = [self.video] + ([self.audio] if self.audio else [])
         for packet in self.container.demux(streams):
             for decoded in packet.decode():
                 if isinstance(decoded, av.VideoFrame):
-                    t = (float(decoded.time) if decoded.time is not None else self.origin + self.seek + next_video)
+                    t = (float(decoded.time) if decoded.time is not None
+                         else self.origin + self.seek + next_video / self.fps)
                     t -= self.origin + self.seek
                     if t < -1 / self.fps:
                         continue
-                    # A constant output grid handles VFR and drops >30fps input without speeding it up.
-                    if t + 1e-6 < next_video:
+                    # Container timestamps may be rounded (e.g. Matroska milliseconds).
+                    # Map to the nearest output slot instead of treating a slightly
+                    # early timestamp as a frame to drop.
+                    slot = math.floor(t * self.fps + 0.5)
+                    if slot < next_video:
                         continue
-                    if t - next_video > 10:
+                    if (slot - next_video) / self.fps > 10:
                         raise ValueError("Discontinuous media timestamps")
                     raw = decoded.reformat(width=self.width, height=self.height, format="yuv420p")
                     data = raw.to_ndarray().tobytes()
-                    while next_video <= t + 1e-6:
-                        yield Frame("video", next_video, last_video or data, self.width, self.height)
+                    while next_video <= slot:
+                        timestamp = next_video / self.fps
+                        pixels = data if next_video == slot else (last_video or data)
+                        yield Frame("video", timestamp, pixels, self.width, self.height)
                         if not self.audio:
                             # Silent movies still have a shared audio/video clock.
                             count = round(48000 / self.fps)
-                            yield Frame("audio", next_video, bytes(count * 4), samples=count)
-                        next_video += 1 / self.fps
+                            yield Frame("audio", timestamp, bytes(count * 4), samples=count)
+                        next_video += 1
                     last_video = data
                 else:
                     for frame in resampler.resample(decoded):
@@ -90,8 +96,6 @@ class Decoder:
             data = frame.to_ndarray().reshape(-1, 2)
             yield Frame("audio", audio_fallback, data.tobytes(), samples=len(data))
             audio_fallback += len(data) / 48000
-        if last_video:
-            yield Frame("video", next_video, last_video, self.width, self.height)
 
     def close(self):
         self.container.close()

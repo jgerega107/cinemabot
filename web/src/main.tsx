@@ -7,11 +7,41 @@ import './style.css';
 type Track = { index: number; title: string };
 type Item = { id: string; title: string; type: string; year?: number; overview: string; duration: number;
   artwork?: string; series?: string; season?: number; episode?: number; audio: Track[]; subtitles: Track[] };
-type Row = Item & { key: string; requested_by: string };
+type Row = Item & { key: string; requested_by: string; requester?: User };
 type Player = { current: Row | null; queue: Row[]; state: string; position: number; volume: number;
   audio: number | null; subtitle: number; channel_name: string | null; can_control: boolean; available: boolean;
   error: string; metrics: { fps?: number; av_drift_ms?: number } };
-type User = { id: string; name: string };
+type User = { id: string; name: string; avatar?: string | null };
+type Brand = { name: string; color: string; logo?: string | null; icon?: string | null;
+  favicon?: string | null; favicon_dark?: string | null; backdrop?: string | null };
+
+function applyTheme(color: string) {
+  if (!/^#[a-f0-9]{6}$/i.test(color)) return;
+  const rgb = color.slice(1).match(/../g)!.map(v => parseInt(v, 16));
+  const mix = (base: number, weight: number) => '#' + rgb.map(v =>
+    Math.round(v * weight + base * (1 - weight)).toString(16).padStart(2, '0')).join('');
+  const linear = rgb.map(v => v / 255 <= .04045 ? v / 255 / 12.92 : ((v / 255 + .055) / 1.055) ** 2.4);
+  const light = linear[0] * .2126 + linear[1] * .7152 + linear[2] * .0722;
+  const palette: Record<string, string> = { accent: color, 'accent-text': light > .179 ? '#000000' : '#ffffff',
+    text: mix(255, .03), muted: mix(255, .3), line: mix(255, .72), bg: mix(0, .08),
+    panel: mix(0, .14), raised: mix(0, .2), selected: mix(0, .35), highlight: mix(255, .45) };
+  Object.entries(palette).forEach(([key, value]) => document.documentElement.style.setProperty('--' + key, value));
+  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', color);
+}
+
+function Avatar({ person }: { person: User }) {
+  const [failed, setFailed] = useState(false);
+  useEffect(() => setFailed(false), [person.avatar]);
+  return <span className="avatar" aria-hidden="true">
+    {person.avatar && !failed ? <img src={person.avatar} alt="" loading="lazy" referrerPolicy="no-referrer"
+      onError={() => setFailed(true)} /> : Array.from(person.name)[0]?.toUpperCase() || '?'}
+  </span>;
+}
+
+function Requester({ row }: { row: Row }) {
+  const person = row.requester || { id: '', name: row.requested_by };
+  return <span className="requester"><Avatar person={person} /><span>Requested by <strong>{person.name}</strong></span></span>;
+}
 
 const empty: Player = { current: null, queue: [], state: 'idle', position: 0, volume: 70, audio: null,
   subtitle: -1, channel_name: null, can_control: false, available: false, error: '', metrics: {} };
@@ -43,7 +73,9 @@ function Poster({ item, large = false }: { item: Item; large?: boolean }) {
 function App() {
   const [user, setUser] = useState<User | null>(null);
   const [initializing, setInitializing] = useState(true);
-  const [instance, setInstance] = useState('your Fluxer community');
+  const [instance, setInstance] = useState('your community');
+  const [brand, setBrand] = useState<Brand>({ name: 'Cinema', color: '#4641d9' });
+  const [brandImageFailed, setBrandImageFailed] = useState(false);
   const [player, setPlayer] = useState<Player>(empty);
   const [libraries, setLibraries] = useState<Item[]>([]);
   const [items, setItems] = useState<Item[]>([]);
@@ -63,7 +95,21 @@ function App() {
   const controls = player.can_control && connected && !busy;
 
   useEffect(() => {
-    api<{ instance: string }>('/api/meta').then(m => setInstance(new URL(m.instance).hostname)).catch(() => {});
+    api<{ instance: string; branding?: Brand }>('/api/meta').then(m => {
+      const name = m.branding?.name || new URL(m.instance).hostname;
+      setInstance(name);
+      setBrand(m.branding || { name, color: '#4641d9' });
+      applyTheme(m.branding?.color || '#4641d9');
+      document.title = name + ' Cinema';
+      document.querySelector('meta[name="description"]')?.setAttribute('content', 'Watch together in ' + name + '.');
+      [m.branding?.favicon, m.branding?.favicon_dark].forEach((url, i) => {
+        if (!url) return;
+        const link = document.createElement('link');
+        link.rel = 'icon'; link.href = url;
+        if (i) link.media = '(prefers-color-scheme: dark)';
+        document.head.append(link);
+      });
+    }).catch(() => {});
     api<User>('/api/me').then(setUser).catch(e => { if (e.status !== 401) setError(e.message); }).finally(() => setInitializing(false));
   }, []);
 
@@ -123,9 +169,14 @@ function App() {
 
   return <div className="app">
     <header className="topbar">
-      <a className="brand" href="/" aria-label="Fluxer Cinema home"><span className="brand-icon"><Clapperboard size={23} /></span><span>fluxer<span className="brand-light">cinema</span></span></a>
+      <a className="brand" href="/" aria-label={instance + ' Cinema home'}>
+        {(brand.logo || brand.icon) && !brandImageFailed
+          ? <img className={brand.logo ? 'brand-logo' : 'brand-symbol'} src={(brand.logo || brand.icon)!}
+              alt={brand.logo ? instance : ''} onError={() => setBrandImageFailed(true)} />
+          : <span className="brand-icon"><Clapperboard size={23} /></span>}
+        <span>{(!brand.logo || brandImageFailed) && instance}<span className="brand-light">cinema</span></span></a>
       <div className="header-end"><span className="instance"><span className={`dot ${connected ? 'online' : ''}`} />{instance}</span>
-        {user && <><span className="avatar">{user.name.slice(0, 1).toUpperCase()}</span><span className="username">{user.name}</span>
+        {user && <><Avatar person={user} /><span className="username">{user.name}</span>
           <button className="icon-button" aria-label="Sign out" onClick={() => api('/auth/logout', {}).then(() => { setUser(null); setPlayer(empty); }).catch(e => setError(e.message))}><LogOut size={17} /></button></>}
       </div>
     </header>
@@ -134,11 +185,11 @@ function App() {
       {notice && <div className="toast" role="status"><Check size={17} />{notice}</div>}
       {!user ? <section className="welcome">
         <div className="welcome-copy"><span className="eyebrow">YOUR LIBRARY. YOUR PEOPLE.</span><h1>A little cinema.<br />A shared evening.</h1>
-          <p>Pick something good from Jellyfin. Settle into a Fluxer voice channel. Watch it together.</p>
-          <a className="button primary" href="/auth/login"><CirclePlay size={19} />{initializing ? 'Connecting…' : 'Sign in with Fluxer'}<ArrowRight size={17} /></a>
+          <p>Pick something good from Jellyfin. Settle into a {instance} voice channel. Watch it together.</p>
+          <a className="button primary" href="/auth/login"><CirclePlay size={19} />{initializing ? 'Connecting…' : 'Sign in with ' + instance}<ArrowRight size={17} /></a>
           <span className="welcome-note">Your community account is your ticket.</span>
         </div>
-        <div className="cinema-art" aria-hidden="true"><div className="film-perfs" /><div className="screen"><span className="screen-mark"><Play size={46} fill="currentColor" /></span><span className="screen-caption">BETTER TOGETHER</span></div><div className="seats"><i /><i /><i /><i /><i /></div></div>
+        <div className="cinema-art" aria-hidden="true">{brand.backdrop && <img className="instance-backdrop" src={brand.backdrop} alt="" onError={e => { e.currentTarget.hidden = true; }} />}<div className="film-perfs" /><div className="screen"><span className="screen-mark"><Play size={46} fill="currentColor" /></span><span className="screen-caption">BETTER TOGETHER</span></div><div className="seats"><i /><i /><i /><i /><i /></div></div>
       </section> : <>
         <div className="page-heading"><div><span className="eyebrow">THE SHARED SCREEN</span><h1>What’s on tonight?</h1><p>A good story is better with company.</p></div>
           <span className="room-badge"><Users size={16} />{player.channel_name || 'Join a voice channel to begin'}</span></div>
@@ -157,7 +208,7 @@ function App() {
           </section>
           <aside className="watch-panel">
             <div className="panel-heading"><span className="eyebrow">NOW SHOWING</span><span className={`status ${player.state === 'playing' ? 'live' : ''}`}>{player.state === 'idle' ? 'READY WHEN YOU ARE' : player.state.toUpperCase()}</span></div>
-            {player.current ? <><button className="now-art" onClick={() => open(player.current!)}><Poster item={player.current} large /><span className="now-overlay"><Play size={25} /></span></button><h2 className="now-title">{player.current.title}</h2><p className="credit">Picked by {player.current.requested_by}</p>
+            {player.current ? <><button className="now-art" onClick={() => open(player.current!)}><Poster item={player.current} large /><span className="now-overlay"><Play size={25} /></span></button><h2 className="now-title">{player.current.title}</h2><div className="credit"><Requester row={player.current} /></div>
               <div className="seek"><input type="range" aria-label="Playback position" min="0" max={Math.max(1, player.current.duration)} step="1" value={seek ?? Math.min(player.position, player.current.duration)} disabled={!controls}
                 onChange={e => setSeek(Number(e.target.value))} onPointerUp={e => { act('seek', { position: Number(e.currentTarget.value) }); setSeek(null); }}
                 onKeyUp={e => { if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) { act('seek', { position: Number(e.currentTarget.value) }); setSeek(null); } }} />
@@ -171,15 +222,15 @@ function App() {
               <p className="shared-note">Playback and track choices are shared by everyone.</p>
             </> : <div className="empty-player"><div className="empty-screen"><Tv size={43} strokeWidth={1} /><span className="empty-screen-dot" /></div><h3>The screen is yours.</h3><p>Choose a movie or episode.<br />We’ll take care of the popcorn mood.</p></div>}
             {!connected && <p className="connection-note">Connecting to the player…</p>}
-            {connected && !player.can_control && <p className="connection-note">Join {player.channel_name || 'a permitted Fluxer voice channel'} to use the controls.</p>}
+            {connected && !player.can_control && <p className="connection-note">Join {player.channel_name || 'a permitted ' + instance + ' voice channel'} to use the controls.</p>}
             {player.error && <p className="player-error" role="status">{player.error}</p>}
             <div className="queue-heading"><h3><ListVideo size={18} />Up next</h3><span>{player.queue.length}</span></div>
-            {player.queue.length ? <ol className="queue">{player.queue.map((row, i) => <li key={row.key}><span className="queue-number">{String(i + 1).padStart(2, '0')}</span><div><strong>{row.title}</strong><span>{row.requested_by}</span></div><div className="queue-actions"><button className="icon-button" aria-label={`Move ${row.title} up`} disabled={!controls || i === 0} onClick={() => act('move', { key: row.key, index: i - 1 })}><ArrowUp size={14} /></button><button className="icon-button" aria-label={`Move ${row.title} down`} disabled={!controls || i === player.queue.length - 1} onClick={() => act('move', { key: row.key, index: i + 1 })}><ArrowDown size={14} /></button><button className="icon-button" aria-label={`Remove ${row.title}`} disabled={!controls} onClick={() => act('remove', { key: row.key })}><X size={14} /></button></div></li>)}</ol> : <p className="empty-queue">A blank slate for the evening.<br />Add a title to keep the stories coming.</p>}
-            <div className="panel-footer"><span className="dot online" />Video and audio play in Fluxer</div>
+            {player.queue.length ? <ol className="queue">{player.queue.map((row, i) => <li key={row.key}><span className="queue-number">{String(i + 1).padStart(2, '0')}</span><div><strong>{row.title}</strong><Requester row={row} /></div><div className="queue-actions"><button className="icon-button" aria-label={`Move ${row.title} up`} disabled={!controls || i === 0} onClick={() => act('move', { key: row.key, index: i - 1 })}><ArrowUp size={14} /></button><button className="icon-button" aria-label={`Move ${row.title} down`} disabled={!controls || i === player.queue.length - 1} onClick={() => act('move', { key: row.key, index: i + 1 })}><ArrowDown size={14} /></button><button className="icon-button" aria-label={`Remove ${row.title}`} disabled={!controls} onClick={() => act('remove', { key: row.key })}><X size={14} /></button></div></li>)}</ol> : <p className="empty-queue">A blank slate for the evening.<br />Add a title to keep the stories coming.</p>}
+            <div className="panel-footer"><span className="dot online" />Video and audio play in {instance}</div>
           </aside>
         </div>
       </>}
-      <footer><span>Jellyfin library. Fluxer company.</span><span>Made for a shared screen <span className="footer-star">✳</span></span></footer>
+      <footer><span>Jellyfin library. {instance} company.</span><span>Made for a shared screen <span className="footer-star">✳</span></span></footer>
     </main>
     <dialog ref={dialogRef} onCancel={() => setSelected(null)} onClick={e => { if (e.target === e.currentTarget) setSelected(null); }}>
       {selected && <div className="detail"><button className="icon-button detail-close" aria-label="Close title details" onClick={() => setSelected(null)}><X size={21} /></button><Poster item={selected} large /><div className="detail-copy"><span className="eyebrow">{selected.series || (selected.type === 'Movie' ? 'FEATURE FILM' : 'EPISODE')}</span><h2>{selected.title}</h2><p className="detail-meta">{selected.year}{selected.duration ? ` · ${Math.round(selected.duration / 60)} min` : ''}</p><p className="overview">{selected.overview || 'No description available for this title.'}</p><div className="detail-buttons"><button className="button primary" disabled={!controls} onClick={() => act('play', { item_id: selected.id })}><Play size={17} fill="currentColor" />{player.current ? 'Play now' : 'Start watching'}</button><button className="button secondary" disabled={!controls} onClick={() => act('add', { item_id: selected.id })}><Plus size={18} />Add to queue</button></div>{!controls && <p className="shared-note">Join the active voice channel to play this title.</p>}</div></div>}

@@ -3,6 +3,7 @@ import json
 import logging
 from contextlib import asynccontextmanager
 from typing import Annotated
+from urllib.parse import urlsplit
 
 import httpx
 from fastapi import FastAPI, Path, Query, Request
@@ -68,7 +69,7 @@ def create_app(config: Settings | None = None, *, start_services: bool = True) -
 
     @app.exception_handler(Problem)
     async def problem_handler(request, exc):
-        return JSONResponse({"error": exc.message}, status_code=exc.status)
+        return JSONResponse({"error": exc.message.replace("Fluxer", fluxer.brand["name"])}, status_code=exc.status)
 
     @app.exception_handler(httpx.HTTPError)
     async def network_handler(request, exc):
@@ -109,25 +110,34 @@ def create_app(config: Settings | None = None, *, start_services: bool = True) -
                             burst=10 if category == "action" else 80)
                 limits.rate((category, "global"), per_minute=300 if category == "action" else 1200,
                             burst=20 if category == "action" else 160)
-                async with limits.slot(category, user_id, total=4 if category == "action" else 16,
-                                       individual=1 if category == "action" else 4):
+                async with limits.slot(category, user_id, total=4 if category == "action" else 32,
+                                       individual=1 if category == "action" else 16):
                     response = await dispatch()
             else:
                 response = await dispatch()
         except Problem as e:
-            response = JSONResponse({"error": e.message}, status_code=e.status,
+            response = JSONResponse({"error": e.message.replace("Fluxer", fluxer.brand["name"])}, status_code=e.status,
                                     headers={"Retry-After": "5"} if e.status == 429 else None)
         except TimeoutError:
             response = JSONResponse({"error": "Request body timed out."}, status_code=408)
         except Exception as e:
             log.error("Request failed (%s)", type(e).__name__)
             response = JSONResponse({"error": "The service could not complete this request."}, status_code=500)
+        image_urls = [fluxer.media, *(fluxer.brand.get(key) for key in
+                                      ("logo", "icon", "favicon", "favicon_dark", "backdrop"))]
+        image_origins = sorted({f"{urlsplit(url).scheme}://{urlsplit(url).netloc}" for url in image_urls if url})
         response.headers.update({
             "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer",
             "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self'; "
-            "img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+            f"img-src 'self' data: {' '.join(image_origins)}; connect-src 'self'; "
+            "frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
         })
         return response
+
+    def branded_snapshot(uid):
+        snapshot = playback.snapshot(uid)
+        snapshot["error"] = snapshot["error"].replace("Fluxer", fluxer.brand["name"])
+        return snapshot
 
     @app.get("/healthz")
     async def health():
@@ -140,7 +150,7 @@ def create_app(config: Settings | None = None, *, start_services: bool = True) -
 
     @app.get("/api/meta")
     async def meta():
-        return {"instance": config.fluxer_origin, "title": "Fluxer Cinema"}
+        return {"instance": config.fluxer_origin, "title": f"{fluxer.brand['name']} Cinema", "branding": fluxer.brand}
 
     @app.get("/auth/login")
     async def login(request: Request):
@@ -190,13 +200,13 @@ def create_app(config: Settings | None = None, *, start_services: bool = True) -
     @app.get("/api/player")
     async def player(request: Request):
         user = await auth.require(request, fresh=True)
-        return playback.snapshot(user["id"])
+        return branded_snapshot(user["id"])
 
     @app.post("/api/action")
     async def action(request: Request, command: Action):
         user = await auth.require(request, fresh=True)
         await playback.action(user, command)
-        return playback.snapshot(user["id"])
+        return branded_snapshot(user["id"])
 
     streams: dict[str, int] = {}
 
@@ -216,9 +226,9 @@ def create_app(config: Settings | None = None, *, start_services: bool = True) -
                     except (Problem, httpx.HTTPError) as e:
                         if not isinstance(e, Problem):
                             e = Problem(503, "Fluxer is temporarily unavailable.")
-                        yield "event: session\ndata: " + json.dumps({"error": e.message, "status": e.status}) + "\n\n"
+                        yield "event: session\ndata: " + json.dumps({"error": e.message.replace("Fluxer", fluxer.brand["name"]), "status": e.status}) + "\n\n"
                         return
-                    yield "event: player\ndata: " + json.dumps(playback.snapshot(uid)) + "\n\n"
+                    yield "event: player\ndata: " + json.dumps(branded_snapshot(uid)) + "\n\n"
                     await asyncio.sleep(1)
             finally:
                 streams[uid] -= 1

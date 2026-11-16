@@ -81,7 +81,7 @@ class ResponseCache:
             self.entries.move_to_end(key)
             return self.entries[key][1]
         if key not in self.pending:
-            if len(self.pending) >= 16:
+            if len(self.pending) >= 32:
                 raise Problem(503, "Catalog requests are busy. Try again shortly.")
             self.pending[key] = asyncio.create_task(self._fetch(key, fetch))
             self.pending[key].add_done_callback(lambda task: None if task.cancelled() else task.exception())

@@ -135,3 +135,28 @@ def test_h264_hevc_and_high_frame_rate(tmp_path, codec, rate):
     videos = [x for x in frames if x.kind == "video"]
     assert len(videos) <= 32
     assert .9 <= videos[-1].time <= 1.1
+
+
+@pytest.mark.parametrize("rate", [Fraction(24), Fraction(24000, 1001), Fraction(25), Fraction(30000, 1001)])
+def test_rounded_container_timestamps_preserve_every_movie_frame(tmp_path, rate):
+    path = tmp_path / "cadence.mkv"
+    # Lossless pixels identify frames; Matroska rounds their PTS to milliseconds.
+    with av.open(str(path), "w") as container:
+        stream = container.add_stream("ffv1", rate=rate)
+        stream.width, stream.height, stream.pix_fmt = 64, 48, "yuv420p"
+        for index in range(120):
+            pixels = np.full((72, 64), 128, dtype=np.uint8)
+            pixels[:48] = index + 20
+            frame = av.VideoFrame.from_ndarray(pixels, format="yuv420p")
+            frame.pts, frame.time_base = index, 1 / rate
+            for packet in stream.encode(frame):
+                container.mux(packet)
+        for packet in stream.encode(None):
+            container.mux(packet)
+    decoder = Decoder({"url": str(path)})
+    try:
+        video = [frame for frame in decoder.frames() if frame.kind == "video"]
+    finally:
+        decoder.close()
+    assert [frame.data[0] for frame in video] == list(range(20, 140))
+    assert [frame.time for frame in video] == pytest.approx([index / float(rate) for index in range(120)])
