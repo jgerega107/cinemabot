@@ -1,7 +1,7 @@
 # Container publishing
 
 All three bots use the same release sequence: tests, one amd64 image build,
-runtime checks and Trivy scan, GitHub provenance attestation, keyless Cosign
+runtime checks and Trivy scan, Cosign provenance/SBOM attestations, keyless Cosign
 signature and verification, then tag promotion. Pull requests build and scan
 locally without registry login, publishing, attestation, or signing.
 
@@ -15,8 +15,9 @@ under build-<run>-<attempt>, but are never promoted. Deploy only a verified
 digest or a promoted tag, never a build tag.
 
 BuildKit emits an SBOM and maximum build provenance in the signed image index.
-actions/attest also records signed GitHub build provenance for newly built
-images. Reused images retain their original build attestation. Cosign uses
+Cosign also signs the original BuildKit provenance and SPDX SBOM as attestations
+in GHCR. Reruns reuse those original predicates rather than claiming to rebuild.
+This works with user-owned private repositories. Cosign uses
 GitHub OIDC and Sigstore; no signing key or new repository secret is needed.
 Actions are pinned to reviewed commits and maintained by Dependabot. The Cosign
 CLI version is explicitly pinned and should be updated alongside the installer
@@ -31,11 +32,12 @@ no vulnerabilities or enforce admission in Kubernetes.
 Verify a default-branch image (replace DIGEST with the published sha256 value):
 
     cosign verify ghcr.io/jgerega107/cinemabot@sha256:DIGEST --certificate-identity https://github.com/jgerega107/cinemabot/.github/workflows/ci.yml@refs/heads/main --certificate-oidc-issuer https://token.actions.githubusercontent.com
-    gh attestation verify oci://ghcr.io/jgerega107/cinemabot@sha256:DIGEST --repo jgerega107/cinemabot
 
 For a version-tag run, use @refs/tags/vVERSION in the certificate identity.
-Repository or workflow renames change that identity. GitHub attestations require
-public repositories on Free/Pro/Team, or Enterprise Cloud for private repositories.
+Repository or workflow renames change that identity. GitHub artifact attestations
+are not used: that service does not support user-owned private repositories.
+Verify the signed provenance/SBOM with cosign verify-attestation, using the same
+certificate identity and issuer and --type slsaprovenance or --type spdxjson.
 
 References:
 - https://docs.docker.com/learn/content/build-a-trusted-delivery-pipeline/
