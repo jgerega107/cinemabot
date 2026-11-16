@@ -110,3 +110,50 @@ async def test_hdr_reported_only_by_playback_info_forces_transcode(config):
         source = await jellyfin.resolve(ID, 0, None, -1)
     assert len(bodies) == 2 and bodies[-1]["EnableDirectPlay"] is False
     assert source.transcoded and "m3u8" in source.url
+
+
+@pytest.mark.parametrize("metadata", [
+    {"ImageTags": {"Thumb": "thumb"}},
+    {"BackdropImageTags": ["backdrop"]},
+    {"SeriesId": "c" * 32, "SeriesPrimaryImageTag": "poster"},
+    {"ParentBackdropItemId": "c" * 32, "ParentBackdropImageTags": ["backdrop"]},
+])
+def test_metadata_exposes_artwork_for_jellyfin_fallbacks(metadata):
+    assert public_item({**ITEM, **metadata})["artwork"] == f"/api/artwork/{ID}"
+
+
+async def test_missing_primary_falls_back_to_authorized_series_poster(config):
+    series_id = "c" * 32
+    requests = []
+    def remote(request):
+        path = request.url.path
+        requests.append(path)
+        if "/Images/" in path:
+            if f"/{ID}/" in path:
+                return httpx.Response(404)
+            return httpx.Response(200, content=b"poster", headers={"content-type": "image/webp"})
+        if path.endswith(series_id):
+            return httpx.Response(200, json={"Id": series_id, "Type": "Series"})
+        return httpx.Response(200, json={**ITEM, "ImageTags": {"Primary": "stale"},
+                                        "SeriesId": series_id, "SeriesPrimaryImageTag": "poster"})
+    async with httpx.AsyncClient(transport=httpx.MockTransport(remote)) as http:
+        jf = Jellyfin(config, http)
+        jf.ready = True
+        assert await jf.artwork(ID) == (b"poster", "image/webp")
+    assert requests[-2:] == [f"/Users/{config.jellyfin_user_id}/Items/{series_id}",
+                             f"/Items/{series_id}/Images/Primary"]
+
+
+async def test_inaccessible_parent_artwork_is_not_fetched(config):
+    series_id = "c" * 32
+    def remote(request):
+        assert "/Images/" not in request.url.path
+        if request.url.path.endswith(series_id):
+            return httpx.Response(404)
+        return httpx.Response(200, json={**ITEM, "SeriesId": series_id,
+                                        "SeriesPrimaryImageTag": "poster"})
+    async with httpx.AsyncClient(transport=httpx.MockTransport(remote)) as http:
+        jf = Jellyfin(config, http)
+        jf.ready = True
+        with pytest.raises(Problem, match="Artwork unavailable"):
+            await jf.artwork(ID)
