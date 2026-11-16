@@ -41,3 +41,7 @@ References:
 - https://docs.docker.com/learn/content/build-a-trusted-delivery-pipeline/
 - https://docs.github.com/en/actions/how-tos/secure-your-work/use-artifact-attestations/use-artifact-attestations
 - https://docs.sigstore.dev/cosign/signing/signing_with_containers/
+
+Cinemabot uses a digest-pinned Debian Trixie Python base and applies available OS
+updates during builds. The previous Bookworm SQLite package failed the common
+CRITICAL vulnerability gate (CVE-2025-7458).
