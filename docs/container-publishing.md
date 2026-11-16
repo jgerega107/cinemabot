@@ -47,3 +47,8 @@ References:
 Cinemabot uses a digest-pinned Debian Trixie Python base and applies available OS
 updates during builds. The previous Bookworm SQLite package failed the common
 CRITICAL vulnerability gate (CVE-2025-7458).
+
+Signing, predicate extraction, and attestation verification run as separate timed
+steps. Full Cosign JSON payloads stay in temporary runner files instead of the
+Actions console; only verification diagnostics and short success messages are
+logged. A timeout fails the job before tag promotion.
