@@ -51,6 +51,14 @@ All viewers share this account's catalog, audio track, and burned-in subtitles. 
 
 Set `JELLYFIN_FORCE_TRANSCODE=false` in the environment or Kubernetes ConfigMap and restart the bot to allow compatible titles to play directly. Subtitles and HDR still require transcoding. If Jellyfin cannot provide a required transcode, playback fails instead of silently falling back to direct decoding. Existing deployments adopting the default must permit video transcoding for the dedicated Jellyfin user.
 
+## HTTP on a trusted LAN
+
+Set `PUBLIC_ORIGIN=http://192.168.1.50:8081` and `ALLOW_INSECURE_LOCAL=true` to use a private LAN IP over HTTP. Register the exact `http://192.168.1.50:8081/auth/callback` redirect URI in Fluxer and open the player using that IP and port. Replace the example IP with your server's address.
+
+The existing opt-in permits localhost/loopback, IPv4 private ranges (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), and IPv6 unique-local addresses (`fc00::/7`). HTTP LAN hostnames and public IPs remain disallowed. HTTPS remains the default; HTTP sign-in/session traffic is unencrypted, so use only on a trusted LAN.
+
+For Compose, replace the loopback-only port mapping with `"192.168.1.50:8081:8080"` to expose the service on that host LAN address. Recreate the container after changing its environment.
+
 ## Docker Compose
 
 Run the published image:
@@ -150,7 +158,7 @@ npx playwright install chromium
 npm test
 ```
 
-For local UI development, set `PUBLIC_ORIGIN=http://localhost:5173` and `ALLOW_INSECURE_LOCAL=true`, and register `http://localhost:5173/auth/callback` on the development Fluxer application. Run `.venv/bin/uvicorn cinema.app:create_app --factory --host 127.0.0.1 --port 8080 --no-access-log --no-proxy-headers` from the project root, then `npm run dev` in `web`. Open the UI at `localhost:5173`. Vite proxies `/api` and `/auth` to the backend. The insecure option is for an isolated development environment only.
+For local UI development, set `PUBLIC_ORIGIN=http://localhost:5173` and `ALLOW_INSECURE_LOCAL=true`, and register `http://localhost:5173/auth/callback` on the development Fluxer application. Run `.venv/bin/uvicorn cinema.app:create_app --factory --host 127.0.0.1 --port 8080 --no-access-log --no-proxy-headers` from the project root, then `npm run dev` in `web`. Open the UI at `localhost:5173`. Vite proxies `/api` and `/auth` to the backend. The insecure option is for localhost development or explicitly trusted LAN access only.
 
 Browser tests use clearly scoped mock catalog/events and exercise desktop/mobile layouts and controls; they do not establish live Fluxer compatibility. Python tests also generate real media to exercise decoding, stereo audio, timeline preservation, seeks, and pause timing.
 
