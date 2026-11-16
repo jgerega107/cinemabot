@@ -3,6 +3,7 @@ import contextlib
 import logging
 from dataclasses import dataclass
 from urllib.parse import urlencode, urljoin, urlsplit
+from uuid import UUID
 
 import httpx
 
@@ -15,6 +16,35 @@ CATALOG = PLAYABLE | {"Series", "Season", "CollectionFolder"}
 log = logging.getLogger(__name__)
 
 
+
+def artwork_sources(item: dict) -> list[tuple[str, str]]:
+    """Prefer a poster, then Jellyfin's available thumbnail/backdrop metadata."""
+    sources = []
+    tags = item.get("ImageTags") or {}
+    if tags.get("Primary"):
+        sources.append((item["Id"], "Primary"))
+    if item.get("SeriesPrimaryImageTag") and item.get("SeriesId"):
+        sources.append((item["SeriesId"], "Primary"))
+    if tags.get("Thumb"):
+        sources.append((item["Id"], "Thumb"))
+    if item.get("BackdropImageTags"):
+        sources.append((item["Id"], "Backdrop"))
+    for kind in ("Thumb", "Backdrop"):
+        if item.get(f"Parent{kind}ItemId") and (
+            item.get(f"Parent{kind}ImageTag") or item.get(f"Parent{kind}ImageTags")
+        ):
+            sources.append((item[f"Parent{kind}ItemId"], kind))
+    valid = []
+    for source_id, kind in sources:
+        try:
+            UUID(source_id)
+        except (ValueError, TypeError, AttributeError):
+            continue
+        if (source_id, kind) not in valid:
+            valid.append((source_id, kind))
+    return valid
+
+
 def public_item(item: dict) -> dict:
     """Explicit allowlist: Jellyfin DTOs can contain paths, URLs, and tokens."""
     return {
@@ -23,7 +53,7 @@ def public_item(item: dict) -> dict:
         "duration": (item.get("RunTimeTicks") or 0) / TICKS,
         "series": item.get("SeriesName"), "season": item.get("ParentIndexNumber"),
         "episode": item.get("IndexNumber"),
-        "artwork": f"/api/artwork/{item['Id']}" if item.get("ImageTags", {}).get("Primary") else None,
+        "artwork": f"/api/artwork/{item['Id']}" if artwork_sources(item) else None,
         "audio": [{"index": s["Index"], "title": s.get("DisplayTitle") or s.get("Language") or "Audio"}
                   for s in item.get("MediaStreams", []) if s.get("Type") == "Audio"],
         "subtitles": [{"index": s["Index"], "title": s.get("DisplayTitle") or s.get("Language") or "Subtitles"}
@@ -116,20 +146,34 @@ class Jellyfin:
                 "total": result.get("TotalRecordCount", 0), "start": start}
 
     async def artwork(self, item_id: str) -> tuple[bytes, str]:
-        await self.raw_item(item_id)  # Image endpoint alone does not enforce the selected library context.
-        async with self.http.stream("GET", self.config.jellyfin_url + f"/Items/{item_id}/Images/Primary",
-                                    headers=self.headers, params={"maxWidth": 500, "quality": 85, "format": "Webp"}) as r:
-            if not r.is_success:
-                raise Problem(404, "Artwork unavailable.")
-            content = bytearray()
-            async for chunk in r.aiter_bytes():
-                content.extend(chunk)
-                if len(content) > 4_000_000:
-                    raise Problem(502, "Artwork exceeds the size limit.")
-            kind = r.headers.get("content-type", "").split(";")[0]
-            if kind not in {"image/webp", "image/jpeg", "image/png"}:
-                raise Problem(502, "Unexpected artwork format.")
-            return bytes(content), kind
+        item = await self.raw_item(item_id)
+        for source_id, kind in artwork_sources(item):
+            if source_id != item_id:
+                # Image endpoints alone do not enforce the selected user's library access.
+                try:
+                    await self.raw_item(source_id)
+                except Problem as error:
+                    if error.status == 404:
+                        continue
+                    raise
+            path = f"/Items/{source_id}/Images/{kind}"
+            async with self.http.stream("GET", self.config.jellyfin_url + path,
+                                        headers=self.headers,
+                                        params={"maxWidth": 500, "quality": 85, "format": "Webp"}) as r:
+                if r.status_code == 404:
+                    continue
+                if not r.is_success:
+                    raise Problem(404, "Artwork unavailable.")
+                content = bytearray()
+                async for chunk in r.aiter_bytes():
+                    content.extend(chunk)
+                    if len(content) > 4_000_000:
+                        raise Problem(502, "Artwork exceeds the size limit.")
+                content_type = r.headers.get("content-type", "").split(";")[0]
+                if content_type not in {"image/webp", "image/jpeg", "image/png"}:
+                    raise Problem(502, "Unexpected artwork format.")
+                return bytes(content), content_type
+        raise Problem(404, "Artwork unavailable.")
 
     def media_url(self, path: str) -> str:
         base = self.config.jellyfin_url
