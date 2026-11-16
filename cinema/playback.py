@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from cinema.errors import Problem
 from cinema.jellyfin import PLAYABLE, Jellyfin, Source
 from cinema.supervisor import Supervisor
+from cinema.youtube import YouTube
 
 log = logging.getLogger(__name__)
 
@@ -18,6 +19,7 @@ class Action(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
     action: Literal["add", "play", "pause", "resume", "seek", "skip", "stop", "remove", "move", "volume", "tracks"]
     item_id: str | None = Field(default=None, pattern=r"^[a-fA-F0-9-]{32,36}$")
+    url: str | None = Field(default=None, max_length=2048)
     key: str | None = Field(default=None, max_length=36)
     position: float | None = Field(default=None, ge=0)
     index: int | None = Field(default=None, ge=0, le=249)
@@ -29,6 +31,7 @@ class Action(BaseModel):
 class Playback:
     def __init__(self, config, fluxer, jellyfin: Jellyfin, supervisor_factory=Supervisor):
         self.config, self.fluxer, self.jellyfin = config, fluxer, jellyfin
+        self.youtube = YouTube()
         self.worker = supervisor_factory(self.worker_event)
         self.lock = asyncio.Lock()
         self.queue: list[dict] = []
@@ -82,20 +85,25 @@ class Playback:
             channel = self.authorize(user["id"])
             action = command.action
             if action in {"add", "play"}:
-                if not command.item_id:
-                    raise Problem(400, "Choose a title.")
-                if len(self.queue) >= 250:
-                    raise Problem(409, "The queue is full.")
-                item = await self.jellyfin.item(command.item_id)
-                if item["type"] not in PLAYABLE:
-                    raise Problem(400, "Choose a movie or episode.")
-                self.authorize(user["id"], channel)
-                row = {**item, "key": str(uuid4()), "requested_by": requester["name"],
-                       "requester": {key: requester.get(key) for key in ("id", "name", "avatar")}}
-                if action == "play" or not self.current:
-                    await self._load(row, channel, user_id=user["id"])
+                if bool(command.item_id) == bool(command.url):
+                    raise Problem(400, "Choose a library title or enter a YouTube link.")
+                starts = action == "play" or not self.current
+                if command.url:
+                    items = await self.youtube.items(command.url)
                 else:
-                    self.queue.append(row)
+                    item = await self.jellyfin.item(command.item_id)
+                    if item["type"] not in PLAYABLE:
+                        raise Problem(400, "Choose a movie or episode.")
+                    items = [item]
+                if len(self.queue) + len(items) - int(starts) > 250:
+                    raise Problem(409, "There is not enough room in the queue for this request.")
+                self.authorize(user["id"], channel)
+                rows = [{**item, "key": str(uuid4()), "requested_by": requester["name"],
+                         "requester": {key: requester.get(key) for key in ("id", "name", "avatar")}}
+                        for item in items]
+                if starts:
+                    await self._load(rows.pop(0), channel, user_id=user["id"])
+                self.queue.extend(rows)
             elif action == "stop":
                 await self._stop(clear=True)
             elif action in {"remove", "move"}:
@@ -148,21 +156,22 @@ class Playback:
                     subtitle: int = -1, paused: bool = False, user_id: str | None = None,
                     force_connect: bool = False):
         # Resolve before interrupting an existing title; invalid choices leave it untouched.
-        source = await self.jellyfin.resolve(item["id"], position, audio, subtitle)
+        provider = self.youtube if item.get("provider") == "youtube" else self.jellyfin
+        source = await provider.resolve(item["id"], position, audio, subtitle)
         try:
             if not self.fluxer.ready:
                 raise Problem(503, "Fluxer disconnected while preparing playback.")
             if user_id:
                 self.authorize(user_id, channel)
         except Exception:
-            await self.jellyfin.release(source, position)
+            await self._release(source, position)
             raise
         try:
             self.generation += 1
             if self.source:
                 with contextlib.suppress(Problem, OSError):
                     await self.worker.send("stop")
-                await self.jellyfin.release(self.source, self.position)
+                await self._release(self.source, self.position)
                 self.source = None
             if not self.worker.process or force_connect or self.channel != channel:
                 await self.worker.close()
@@ -181,10 +190,18 @@ class Playback:
             self.state = "paused" if paused else "loading"
             await self.worker.send("play", source=source.worker(), generation=self.generation, paused=paused)
         except Exception:
-            await self.jellyfin.release(source, position)
+            await self._release(source, position)
             self.source = None
             await self._fail("Could not start playback. Check the connections and selected tracks.")
             raise
+
+    async def _release(self, source: Source, position: float):
+        if source.method != "YouTube":
+            await self.jellyfin.release(source, position)
+
+    async def _source_report(self, source: Source, event: str, position: float, paused: bool):
+        if source.method != "YouTube":
+            await self.jellyfin.report(source, event, position, paused)
 
     async def _report(self):
         if self.source:
@@ -192,7 +209,7 @@ class Playback:
                 log.info("Publisher performance: state=%s fps=%s queued_av_drift_ms=%s", self.state,
                          self.metrics.get("fps"), self.metrics.get("av_drift_ms"))
             try:
-                await self.jellyfin.report(self.source, "progress", self.position, self.state == "paused")
+                await self._source_report(self.source, "progress", self.position, self.state == "paused")
             except Exception:
                 log.warning("Jellyfin progress reporting unavailable")
 
@@ -202,7 +219,9 @@ class Playback:
             try:
                 await self._load(row, self.channel)
             except Exception:
-                await self._fail("The next title could not be played.")
+                await self._fail("The next title could not be played. Retry or skip it.")
+                self.current, self.position = row, 0
+                self.audio, self.subtitle = None, -1
         else:
             await self._stop(clear=False)
 
@@ -210,7 +229,7 @@ class Playback:
         self.generation += 1
         await self.worker.close()
         if self.source:
-            await self.jellyfin.release(self.source, self.position)
+            await self._release(self.source, self.position)
         await self.fluxer.leave()
         self.source = self.current = self.channel = None
         self.state = "idle"
@@ -230,7 +249,7 @@ class Playback:
         self.reconnect = True
         await self.worker.close()
         if self.source:
-            await self.jellyfin.release(self.source, self.position)
+            await self._release(self.source, self.position)
             self.source = None
         await self.fluxer.leave()
 
@@ -248,7 +267,7 @@ class Playback:
                         await self.fluxer.advertise(True)
                         if self.state != "paused":
                             self.state = "playing"
-                        await self.jellyfin.report(self.source, "start", self.position, self.state == "paused")
+                        await self._source_report(self.source, "start", self.position, self.state == "paused")
                         log.info("Playback started (%s, %sx%s)", self.source.method,
                                  message.get("width"), message.get("height"))
                     elif event == "progress" and self.current:

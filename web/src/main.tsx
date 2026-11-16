@@ -5,7 +5,7 @@ import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Check, ChevronRight, CircleP
 import './style.css';
 
 type Track = { index: number; title: string };
-type Item = { id: string; title: string; type: string; year?: number; overview: string; duration: number;
+type Item = { provider?: string; id: string; title: string; type: string; year?: number; overview: string; duration: number;
   artwork?: string; series?: string; season?: number; episode?: number; audio: Track[]; subtitles: Track[] };
 type Row = Item & { key: string; requested_by: string; requester?: User };
 type Player = { current: Row | null; queue: Row[]; state: string; position: number; volume: number;
@@ -66,7 +66,7 @@ function Poster({ item, large = false }: { item: Item; large?: boolean }) {
   return <div className={`poster ${large ? 'large' : ''}`}>
     {item.artwork && !failed ? <img src={item.artwork} alt="" loading="lazy" onError={() => setFailed(true)} /> :
       <div className="poster-fallback"><Film size={large ? 56 : 32} strokeWidth={1} /><span>{item.title}</span></div>}
-    <span className="poster-type">{item.type === 'Series' ? 'SERIES' : item.type === 'Episode' ? `EPISODE ${item.episode ?? ''}` : item.year ?? 'FILM'}</span>
+    <span className="poster-type">{item.type === 'Series' ? 'SERIES' : item.type === 'Episode' ? `EPISODE ${item.episode ?? ''}` : item.provider === 'youtube' ? 'YOUTUBE' : item.year ?? 'FILM'}</span>
   </div>;
 }
 
@@ -81,6 +81,7 @@ function App() {
   const [items, setItems] = useState<Item[]>([]);
   const [crumbs, setCrumbs] = useState<Item[]>([]);
   const [query, setQuery] = useState('');
+  const [youtubeUrl, setYoutubeUrl] = useState('');
   const [page, setPage] = useState(0);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
@@ -149,6 +150,7 @@ function App() {
   useEffect(() => { if (notice) { const t = setTimeout(() => setNotice(''), 3500); return () => clearTimeout(t); } }, [notice]);
 
   async function act(action: string, fields: object = {}) {
+    if (!controls) return;
     setBusy(true); setError('');
     try {
       const result = await api<Player>('/api/action', { action, key: player.current?.key, ...fields });
@@ -160,6 +162,7 @@ function App() {
   }
 
   async function open(item: Item) {
+    if (item.provider === 'youtube') { setSelected(item); return; }
     if (['Series', 'Season', 'CollectionFolder'].includes(item.type)) {
       setCrumbs(c => [...c, item]); setQuery(''); setPage(0); return;
     }
@@ -217,13 +220,22 @@ function App() {
                 <button className="play-button" aria-label={player.state === 'paused' || player.state === 'error' ? 'Resume' : 'Pause'} disabled={!controls} onClick={() => act(player.state === 'paused' || player.state === 'error' ? 'resume' : 'pause')}>{player.state === 'paused' || player.state === 'error' ? <Play size={23} fill="currentColor" /> : <Pause size={23} fill="currentColor" />}</button>
                 <button className="icon-button" aria-label="Skip title" disabled={!controls} onClick={() => act('skip')}><SkipForward size={22} /></button></div>
               <label className="volume"><Volume2 size={17} /><input aria-label="Shared volume" type="range" min="0" max="100" value={player.volume} disabled={!controls} onChange={e => setPlayer({ ...player, volume: Number(e.target.value) })} onPointerUp={e => act('volume', { value: Number(e.currentTarget.value) })} onKeyUp={e => act('volume', { value: Number(e.currentTarget.value) })} /><span>{player.volume}%</span></label>
-              <div className="track-selects"><label>Audio<select aria-label="Audio track" value={player.audio ?? ''} disabled={!controls} onChange={e => act('tracks', { audio: e.target.value ? Number(e.target.value) : null, subtitle: player.subtitle })}><option value="">Default</option>{player.current.audio.map(t => <option key={t.index} value={t.index}>{t.title}</option>)}</select></label>
-                <label>Subtitles<select aria-label="Subtitle track" value={player.subtitle} disabled={!controls} onChange={e => act('tracks', { audio: player.audio, subtitle: Number(e.target.value) })}><option value={-1}>Off</option>{player.current.subtitles.map(t => <option key={t.index} value={t.index}>{t.title}</option>)}</select></label></div>
+              {player.current.provider !== 'youtube' && <div className="track-selects"><label>Audio<select aria-label="Audio track" value={player.audio ?? ''} disabled={!controls} onChange={e => act('tracks', { audio: e.target.value ? Number(e.target.value) : null, subtitle: player.subtitle })}><option value="">Default</option>{player.current.audio.map(t => <option key={t.index} value={t.index}>{t.title}</option>)}</select></label>
+                <label>Subtitles<select aria-label="Subtitle track" value={player.subtitle} disabled={!controls} onChange={e => act('tracks', { audio: player.audio, subtitle: Number(e.target.value) })}><option value={-1}>Off</option>{player.current.subtitles.map(t => <option key={t.index} value={t.index}>{t.title}</option>)}</select></label></div>}
               <p className="shared-note">Playback and track choices are shared by everyone.</p>
             </> : <div className="empty-player"><div className="empty-screen"><Tv size={43} strokeWidth={1} /><span className="empty-screen-dot" /></div><h3>The screen is yours.</h3><p>Choose a movie or episode.<br />We’ll take care of the popcorn mood.</p></div>}
             {!connected && <p className="connection-note">Connecting to the player…</p>}
             {connected && !player.can_control && <p className="connection-note">Join {player.channel_name || 'a permitted ' + instance + ' voice channel'} to use the controls.</p>}
             {player.error && <p className="player-error" role="status">{player.error}</p>}
+            <form className="youtube-request" onSubmit={e => { e.preventDefault(); act('add', { url: youtubeUrl.trim() }); }}>
+              <label htmlFor="youtube-url">YouTube video or playlist</label>
+              <input id="youtube-url" type="url" required maxLength={2048} placeholder="https://www.youtube.com/…"
+                value={youtubeUrl} onChange={e => setYoutubeUrl(e.target.value)} disabled={!controls} />
+              <div className="detail-buttons"><button className="button secondary" type="submit" disabled={!controls || !youtubeUrl.trim()}><Plus size={16} />Add to queue</button>
+                <button className="button primary" type="button" disabled={!controls || !youtubeUrl.trim()}
+                  onClick={() => act('play', { url: youtubeUrl.trim() })}><Play size={16} />Play now</button></div>
+              <p className="shared-note">Playlists add in order (up to 250 videos). Play now starts the first video and queues the rest.</p>
+            </form>
             <div className="queue-heading"><h3><ListVideo size={18} />Up next</h3><span>{player.queue.length}</span></div>
             {player.queue.length ? <ol className="queue">{player.queue.map((row, i) => <li key={row.key}><span className="queue-number">{String(i + 1).padStart(2, '0')}</span><div><strong>{row.title}</strong><Requester row={row} /></div><div className="queue-actions"><button className="icon-button" aria-label={`Move ${row.title} up`} disabled={!controls || i === 0} onClick={() => act('move', { key: row.key, index: i - 1 })}><ArrowUp size={14} /></button><button className="icon-button" aria-label={`Move ${row.title} down`} disabled={!controls || i === player.queue.length - 1} onClick={() => act('move', { key: row.key, index: i + 1 })}><ArrowDown size={14} /></button><button className="icon-button" aria-label={`Remove ${row.title}`} disabled={!controls} onClick={() => act('remove', { key: row.key })}><X size={14} /></button></div></li>)}</ol> : <p className="empty-queue">A blank slate for the evening.<br />Add a title to keep the stories coming.</p>}
             <div className="panel-footer"><span className="dot online" />Video and audio play in {instance}</div>
@@ -233,7 +245,7 @@ function App() {
       <footer><span>Jellyfin library. {instance} company.</span><span>Made for a shared screen <span className="footer-star">✳</span></span></footer>
     </main>
     <dialog ref={dialogRef} onCancel={() => setSelected(null)} onClick={e => { if (e.target === e.currentTarget) setSelected(null); }}>
-      {selected && <div className="detail"><button className="icon-button detail-close" aria-label="Close title details" onClick={() => setSelected(null)}><X size={21} /></button><Poster item={selected} large /><div className="detail-copy"><span className="eyebrow">{selected.series || (selected.type === 'Movie' ? 'FEATURE FILM' : 'EPISODE')}</span><h2>{selected.title}</h2><p className="detail-meta">{selected.year}{selected.duration ? ` · ${Math.round(selected.duration / 60)} min` : ''}</p><p className="overview">{selected.overview || 'No description available for this title.'}</p><div className="detail-buttons"><button className="button primary" disabled={!controls} onClick={() => act('play', { item_id: selected.id })}><Play size={17} fill="currentColor" />{player.current ? 'Play now' : 'Start watching'}</button><button className="button secondary" disabled={!controls} onClick={() => act('add', { item_id: selected.id })}><Plus size={18} />Add to queue</button></div>{!controls && <p className="shared-note">Join the active voice channel to play this title.</p>}</div></div>}
+      {selected && <div className="detail"><button className="icon-button detail-close" aria-label="Close title details" onClick={() => setSelected(null)}><X size={21} /></button><Poster item={selected} large /><div className="detail-copy"><span className="eyebrow">{selected.series || (selected.provider === 'youtube' ? 'YOUTUBE' : selected.type === 'Movie' ? 'FEATURE FILM' : 'EPISODE')}</span><h2>{selected.title}</h2><p className="detail-meta">{selected.year}{selected.duration ? ` · ${Math.round(selected.duration / 60)} min` : ''}</p><p className="overview">{selected.overview || 'No description available for this title.'}</p><div className="detail-buttons"><button className="button primary" disabled={!controls} onClick={() => act('play', selected.provider === 'youtube' ? { url: 'https://www.youtube.com/watch?v=' + selected.id } : { item_id: selected.id })}><Play size={17} fill="currentColor" />{player.current ? 'Play now' : 'Start watching'}</button><button className="button secondary" disabled={!controls} onClick={() => act('add', selected.provider === 'youtube' ? { url: 'https://www.youtube.com/watch?v=' + selected.id } : { item_id: selected.id })}><Plus size={18} />Add to queue</button></div>{!controls && <p className="shared-note">Join the active voice channel to play this title.</p>}</div></div>}
     </dialog>
   </div>;
 }
