@@ -5,7 +5,7 @@ RUN npm ci
 COPY web/ ./
 RUN npm run build
 
-FROM python:3.13-slim-bookworm AS runtime
+FROM python:3.15-slim-bookworm AS runtime
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 PIP_NO_CACHE_DIR=1
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates libva2 libva-drm2 libdrm2 intel-media-va-driver libseccomp2 \
