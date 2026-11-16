@@ -36,6 +36,8 @@ class Worker:
         self.offset = 0.0
         self.position = 0.0
         self.last_frame = None
+        self.buffering = False
+        self.video_format = None
         self.disconnected = False
         self.intentional_close = False
         self.bitrate = 6_000_000
@@ -99,35 +101,43 @@ class Worker:
             await asyncio.sleep(min(delay, 0.02))
 
     async def tracks(self, decoder: Decoder):
-        for track in (self.video_track, self.audio_track):
-            if track:
-                await self.room.local_participant.unpublish_track(track.sid)
-        for source in (self.video_source, self.audio_source):
-            if source:
-                await source.aclose()
-        self.video_source = rtc.VideoSource(decoder.width, decoder.height)
-        self.audio_source = rtc.AudioSource(48000, 2, queue_size_ms=50)
-        self.video_track = rtc.LocalVideoTrack.create_video_track("cinema-video", self.video_source)
-        self.audio_track = rtc.LocalAudioTrack.create_audio_track("cinema-audio", self.audio_source)
-        await self.room.local_participant.publish_track(self.video_track, rtc.TrackPublishOptions(
-            source=rtc.TrackSource.SOURCE_SCREENSHARE, simulcast=False, video_codec=rtc.VideoCodec.H264,
-            video_encoding=rtc.VideoEncoding(max_framerate=decoder.fps, max_bitrate=self.bitrate)))
-        await self.room.local_participant.publish_track(self.audio_track, rtc.TrackPublishOptions(
-            source=rtc.TrackSource.SOURCE_SCREENSHARE_AUDIO, dtx=False, red=True,
-            audio_encoding={"max_bitrate": 128_000}))
+        video_format = (decoder.width, decoder.height, decoder.fps)
+        # Seeking and track changes normally keep the same output format.
+        # Retain publications so receivers don't unsubscribe/reacquire the stream.
+        if self.video_track is None or self.video_format != video_format:
+            if self.video_track:
+                await self.room.local_participant.unpublish_track(self.video_track.sid)
+            if self.video_source:
+                await self.video_source.aclose()
+            self.last_frame = None
+            self.video_source = rtc.VideoSource(decoder.width, decoder.height)
+            self.video_track = rtc.LocalVideoTrack.create_video_track("cinema-video", self.video_source)
+            await self.room.local_participant.publish_track(self.video_track, rtc.TrackPublishOptions(
+                source=rtc.TrackSource.SOURCE_SCREENSHARE, simulcast=False, video_codec=rtc.VideoCodec.H264,
+                video_encoding=rtc.VideoEncoding(max_framerate=decoder.fps, max_bitrate=self.bitrate)))
+            self.video_format = video_format
+        # All decoded audio is normalized to 48 kHz stereo, even across titles.
+        if self.audio_track is None:
+            self.audio_source = rtc.AudioSource(48000, 2, queue_size_ms=50)
+            self.audio_track = rtc.LocalAudioTrack.create_audio_track("cinema-audio", self.audio_source)
+            await self.room.local_participant.publish_track(self.audio_track, rtc.TrackPublishOptions(
+                source=rtc.TrackSource.SOURCE_SCREENSHARE_AUDIO, dtx=False, red=True,
+                audio_encoding={"max_bitrate": 128_000}))
+        # cancel() flushed old frames and closed the previous synchronizer.
+        # A fresh clock supports backward seeks without reusing old timestamps.
         self.sync = rtc.AVSynchronizer(audio_source=self.audio_source, video_source=self.video_source,
                                        video_fps=decoder.fps, video_queue_size_ms=50)
 
     async def play(self, spec: dict, generation: int):
         decoder = None
         pending_decode = None
+        self.buffering = True
         try:
             # Shield native work from cancellation, then join it before closing its container.
             pending_decode = asyncio.create_task(asyncio.to_thread(Decoder, spec))
             decoder = await asyncio.shield(pending_decode)
             pending_decode = None
             await self.tracks(decoder)
-            self.last_frame = None
             self.offset = float(spec.get("offset", 0))
             self.position = self.offset
             self.started = time.monotonic()
@@ -147,6 +157,7 @@ class Worker:
                     frame = rtc.VideoFrame(decoded.width, decoded.height, rtc.VideoBufferType.I420, decoded.data)
                     await self.sync.push(frame, self.offset + decoded.time)
                     self.last_frame = frame
+                    self.buffering = False
                 else:
                     frame = rtc.AudioFrame(scale_audio(decoded.data, self.volume), 48000, 2, decoded.samples)
                     await self.sync.push(frame, self.offset + decoded.time + decoded.samples / 48000)
@@ -156,6 +167,7 @@ class Worker:
         except asyncio.CancelledError:
             raise
         except Exception:
+            self.buffering = False
             emit("error", generation=generation, message="Media decoding or publishing failed.")
         finally:
             if pending_decode:
@@ -169,10 +181,10 @@ class Worker:
     async def metrics(self):
         while True:
             await asyncio.sleep(1)
-            if self.paused and self.last_frame and self.video_source:
+            if (self.paused or self.buffering) and self.last_frame and self.video_source:
                 # Keep a keyframe-capable publication for viewers who arrive during a pause.
                 self.video_source.capture_frame(self.last_frame)
-            if self.sync:
+            if self.sync and not self.buffering:
                 emit("progress", generation=self.generation, position=self.position, paused=self.paused,
                      fps=round(self.sync.actual_fps, 2),
                      av_drift_ms=round((self.sync.last_video_time - self.sync.last_audio_time) * 1000, 1))
@@ -186,6 +198,7 @@ class Worker:
                 if action == "connect":
                     await self.connect(command)
                 elif action == "play":
+                    self.buffering = True
                     await self.cancel()
                     self.generation = command["generation"]
                     self.paused = command.get("paused", False)
@@ -197,6 +210,9 @@ class Worker:
                 elif action == "volume":
                     self.volume = command["value"]
                 elif action == "stop":
+                    # Parent uses stop to prepare a replacement source; a full
+                    # user stop closes the worker and disconnects the room.
+                    self.buffering = True
                     await self.cancel()
                 elif action == "close":
                     break
