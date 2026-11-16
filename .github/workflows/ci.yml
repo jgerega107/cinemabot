@@ -14,12 +14,12 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.13'
           cache: pip
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '24'
           cache: npm
@@ -41,72 +41,107 @@ jobs:
           CINEMA_ENV_FILE=.env.example docker compose --env-file .env.example config --quiet
           kubectl kustomize deploy/kubernetes > /tmp/cinema.yaml
           kubectl kustomize deploy/kubernetes-intel > /tmp/cinema-intel.yaml
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()
         with:
           name: browser-test-results
           path: web/test-results
   image:
     needs: test
+    if: >-
+      github.event_name == 'pull_request' ||
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch) ||
+      startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
-    # Branch/tag runs must not race when first publishing the same commit.
     concurrency:
-      group: cinema-image-${{ github.sha }}
+      group: container-${{ github.repository }}-${{ github.event_name == 'pull_request' && github.ref || 'publish' }}
       cancel-in-progress: false
     permissions:
       contents: read
       packages: write
+      id-token: write
+      attestations: write
     steps:
-      - uses: actions/checkout@v7
-      - uses: docker/setup-buildx-action@v4
-      - name: Set lowercase image name
-        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
-      - uses: docker/login-action@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require release commits from the default branch
+        if: github.event_name != 'pull_request'
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: git merge-base --is-ancestor "$GITHUB_SHA" "origin/$DEFAULT_BRANCH"
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Set image names
+        run: |
+          image="ghcr.io/$(echo "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+          echo "IMAGE=$image" >> "$GITHUB_ENV"
+          echo "CANDIDATE=$image:build-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" >> "$GITHUB_ENV"
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         if: github.event_name != 'pull_request'
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/metadata-action@v6
+      - uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         id: meta
         with:
           images: ${{ env.IMAGE }}
+          flavor: latest=false
           tags: |
             type=sha,format=long,prefix=sha-
             type=semver,pattern={{version}}
+            type=raw,value=latest,enable={{is_default_branch}}
             type=raw,value=main,enable={{is_default_branch}}
-      - name: Check immutable commit image
+
+      - name: Reuse an immutable commit image
         id: commit
         if: github.event_name != 'pull_request'
+        shell: bash
         run: |
-          if docker buildx imagetools inspect "$IMAGE:sha-$GITHUB_SHA" > /tmp/manifest.txt 2> /tmp/manifest.err; then
+          set -euo pipefail
+          if docker buildx imagetools inspect "$IMAGE:sha-$GITHUB_SHA" --format '{{json .Manifest}}' > "$RUNNER_TEMP/manifest.json" 2> "$RUNNER_TEMP/manifest.err"; then
+            digest=$(jq -er '.digest' "$RUNNER_TEMP/manifest.json")
+            [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
+            echo "digest=$digest" >> "$GITHUB_OUTPUT"
             echo 'exists=true' >> "$GITHUB_OUTPUT"
           else
-            # Authentication or registry outages must not trigger replacement.
-            if [[ "$(cat /tmp/manifest.err)" != *"not found"* ]]; then
-              cat /tmp/manifest.err
+            if ! grep -qiE 'not found|manifest unknown' "$RUNNER_TEMP/manifest.err"; then
+              cat "$RUNNER_TEMP/manifest.err"
               exit 1
             fi
             echo 'exists=false' >> "$GITHUB_OUTPUT"
           fi
-      - uses: docker/build-push-action@v7
+      - name: Build once with SBOM and provenance
+        id: build
         if: steps.commit.outputs.exists != 'true'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           platforms: linux/amd64
-          load: true
-          tags: cinema:test
+          push: ${{ github.event_name != 'pull_request' }}
+          load: ${{ github.event_name == 'pull_request' }}
+          tags: ${{ github.event_name == 'pull_request' && 'bot:test' || env.CANDIDATE }}
           labels: ${{ steps.meta.outputs.labels }}
+          provenance: ${{ github.event_name != 'pull_request' && 'mode=max' || 'false' }}
+          sbom: ${{ github.event_name != 'pull_request' }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-      - name: Load existing commit image for verification
-        if: steps.commit.outputs.exists == 'true'
+      - name: Load the exact published digest for checks
+        id: image
+        if: github.event_name != 'pull_request'
+        env:
+          DIGEST: ${{ steps.commit.outputs.digest || steps.build.outputs.digest }}
+        shell: bash
         run: |
-          docker pull --platform linux/amd64 "$IMAGE:sha-$GITHUB_SHA"
-          docker tag "$IMAGE:sha-$GITHUB_SHA" cinema:test
+          set -euo pipefail
+          [[ "$DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+          docker pull --platform linux/amd64 "$IMAGE@$DIGEST"
+          docker tag "$IMAGE@$DIGEST" bot:test
       - name: Smoke test the exact image without upstream credentials
         run: |
-          docker run -d --name cinema-smoke --network none --read-only --tmpfs /tmp:size=512m --env-file .env.example cinema:test
+          docker run -d --name cinema-smoke --network none --read-only --tmpfs /tmp:size=512m --env-file .env.example bot:test
           for attempt in $(seq 1 20); do
             if docker exec cinema-smoke python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=2)"; then break; fi
             sleep 1
@@ -129,24 +164,60 @@ jobs:
           docker exec -i cinema-smoke python - < scripts/check_runtime.py
           printf '{"command":"close"}\n' | docker exec -i cinema-smoke python -m cinema.worker_entry
           docker rm -f cinema-smoke
-      - uses: docker/build-push-action@v7
+      - name: Scan the tested image
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker save bot:test -o "$RUNNER_TEMP/image.tar"
+          docker run --rm -v "$RUNNER_TEMP/image.tar:/image.tar:ro" \
+            aquasec/trivy:0.76.1@sha256:790fd66d1697395d8693d1acaa1ea702406a20f109b6fc7bac8db623eca6c06c \
+            image --scanners vuln --format json --input /image.tar > "$RUNNER_TEMP/scan.json"
+          jq -r '[.Results[]? | .Vulnerabilities[]? | select(.Severity == "HIGH" or .Severity == "CRITICAL")] | unique_by([.VulnerabilityID,.PkgName,.InstalledVersion]) | .[] | [.Severity,.VulnerabilityID,.PkgName,.InstalledVersion,.FixedVersion] | @tsv' "$RUNNER_TEMP/scan.json"
+          jq -e '[.Results[]? | .Vulnerabilities[]? | select(.VulnerabilityID == "CVE-2026-111497" or .Severity == "CRITICAL")] | length == 0' "$RUNNER_TEMP/scan.json"
+      - name: Attest the new build
         if: github.event_name != 'pull_request' && steps.commit.outputs.exists != 'true'
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
-          context: .
-          platforms: linux/amd64
-          push: true
-          tags: ${{ env.IMAGE }}:sha-${{ github.sha }}
-          labels: ${{ steps.meta.outputs.labels }}
-          provenance: true
-          sbom: true
-          cache-from: type=gha
-      - name: Publish branch and release aliases
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.image.outputs.digest }}
+          push-to-registry: true
+      - name: Install Cosign
+        if: github.event_name != 'pull_request'
+        uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+        with:
+          cosign-release: v3.1.4
+      - name: Sign and verify the checked digest
+        if: github.event_name != 'pull_request'
+        env:
+          DIGEST: ${{ steps.image.outputs.digest }}
+          WORKFLOW_IDENTITY: https://github.com/${{ github.workflow_ref }}
+        run: |
+          cosign sign --yes "$IMAGE@$DIGEST"
+          cosign verify "$IMAGE@$DIGEST" \
+            --certificate-identity "$WORKFLOW_IDENTITY" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com
+      - name: Promote verified image to commit, branch and release tags
         if: github.event_name != 'pull_request'
         env:
           TAGS: ${{ steps.meta.outputs.tags }}
+          DIGEST: ${{ steps.image.outputs.digest }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          EXISTING: ${{ steps.commit.outputs.exists }}
+        shell: bash
         run: |
+          set -euo pipefail
+          current=$(git ls-remote origin "refs/heads/$DEFAULT_BRANCH" | cut -f1)
           while IFS= read -r tag; do
-            if [[ "$tag" != "$IMAGE:sha-$GITHUB_SHA" ]]; then
-              docker buildx imagetools create --tag "$tag" "$IMAGE:sha-$GITHUB_SHA"
+            [[ -n "$tag" ]] || continue
+            if [[ "$tag" == "$IMAGE:sha-$GITHUB_SHA" && "$EXISTING" == true ]]; then
+              continue
             fi
+            # Delayed runs must not roll moving aliases backward.
+            if [[ "$tag" == "$IMAGE:latest" || "$tag" == "$IMAGE:$DEFAULT_BRANCH" || "$tag" == "$IMAGE:fluxer" ]]; then
+              [[ "$current" == "$GITHUB_SHA" ]] || continue
+            fi
+            docker buildx imagetools create --tag "$tag" "$IMAGE@$DIGEST"
+            actual=$(docker buildx imagetools inspect "$tag" --format '{{json .Manifest}}' | jq -er '.digest')
+            [[ "$actual" == "$DIGEST" ]]
           done <<< "$TAGS"
+          echo "Published verified image: $IMAGE@$DIGEST" >> "$GITHUB_STEP_SUMMARY"
