@@ -98,11 +98,20 @@ async def test_artwork_reuses_bounded_cache(app, signed_in, monkeypatch):
     app.state.jellyfin.ready = True
     monkeypatch.setattr(app.state.jellyfin, "artwork", artwork)
     path = "/api/artwork/" + "a" * 32
-    assert (await signed_in.get(path)).content == b"image"
+    response = await signed_in.get(path)
+    assert response.content == b"image"
+    assert response.headers["cache-control"] == "private, max-age=3600"
+    assert "Cookie" in response.headers["vary"]
     assert (await signed_in.get(path)).content == b"image"
     assert len(calls) == 1
     app.state.jellyfin.ready = False
-    assert (await signed_in.get(path)).status_code == 503
+    response = await signed_in.get(path)
+    assert response.status_code == 503
+    assert response.headers["cache-control"] == "no-store"
+    signed_in.cookies.clear()
+    response = await signed_in.get(path)
+    assert response.status_code == 401
+    assert response.headers["cache-control"] == "no-store"
 
 
 async def test_concurrency_rejects_before_another_membership_lookup(app, signed_in, monkeypatch):
@@ -131,15 +140,18 @@ async def test_normal_parallel_poster_loading_is_admitted(app, signed_in, monkey
     calls = []
     async def artwork(item):
         calls.append(item)
-        if len(calls) == 8:
+        if len(calls) == 24:
             entered.set()
         await release.wait()
         return b"image", "image/webp"
     app.state.jellyfin.ready = True
     monkeypatch.setattr(app.state.jellyfin, "artwork", artwork)
-    tasks = [asyncio.create_task(signed_in.get(f"/api/artwork/{i:032x}")) for i in range(8)]
+    tasks = [asyncio.create_task(signed_in.get(f"/api/artwork/{i:032x}")) for i in range(40)]
     try:
         await asyncio.wait_for(entered.wait(), 2)
+        assert len(calls) == 24
+        # Catalog artwork must not occupy the player API's read slots.
+        assert (await signed_in.get("/api/player")).status_code == 200
     finally:
         release.set()
         responses = await asyncio.gather(*tasks)

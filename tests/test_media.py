@@ -160,3 +160,32 @@ def test_rounded_container_timestamps_preserve_every_movie_frame(tmp_path, rate)
         decoder.close()
     assert [frame.data[0] for frame in video] == list(range(20, 140))
     assert [frame.time for frame in video] == pytest.approx([index / float(rate) for index in range(120)])
+
+
+def test_vod_hls_seek_preserves_picture_and_timeline(tmp_path):
+    path = tmp_path / "master.m3u8"
+    with av.open(str(path), "w", format="hls", options={
+            "hls_time": "1", "hls_list_size": "0", "hls_playlist_type": "vod"}) as output:
+        video = output.add_stream("libx264", rate=25)
+        video.width, video.height, video.pix_fmt = 160, 90, "yuv420p"
+        video.codec_context.gop_size = 25
+        video.options = {"preset": "ultrafast", "crf": "18"}
+        for index in range(150):
+            frame = av.VideoFrame.from_ndarray(
+                np.full((90, 160, 3), 20 + index, dtype=np.uint8), format="rgb24")
+            frame.pts, frame.time_base = index, Fraction(1, 25)
+            for packet in video.encode(frame):
+                output.mux(packet)
+        for packet in video.encode(None):
+            output.mux(packet)
+
+    decoder = Decoder({"url": str(path), "seek": 4.4, "offset": 4.4})
+    try:
+        frames = list(decoder.frames())
+    finally:
+        decoder.close()
+    assert frames and all(f.time >= 0 for f in frames)
+    assert frames[0].time < .05
+    assert frames[-1].time == pytest.approx(1.56, abs=.05)
+    # Verify actual content, not just a relabeled clock: at 4.4s RGB is ~130.
+    assert np.frombuffer(frames[0].data[:160 * 90], dtype=np.uint8).mean() > 110

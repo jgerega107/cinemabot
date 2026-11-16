@@ -40,6 +40,7 @@ def create_app(config: Settings | None = None, *, start_services: bool = True) -
     playback = Playback(config, fluxer, jellyfin)
     auth = Auth(config, fluxer, http)
     limits = Limits()
+    artwork_slots = asyncio.Semaphore(24)
     metadata = ResponseCache(max_bytes=4 * 1024 * 1024, ttl=10, size=lambda x: len(json.dumps(x).encode()))
     images = ResponseCache(max_bytes=32 * 1024 * 1024, ttl=10, size=lambda x: len(x[0]))
     proxies = config.proxy_networks
@@ -105,14 +106,21 @@ def create_app(config: Settings | None = None, *, start_services: bool = True) -
             elif path.startswith("/api/") and path != "/api/meta":
                 # Local cookie verification and admission happen before any upstream request.
                 user_id = auth.local_session(request).user["id"]
-                category = "action" if path == "/api/action" else "read"
+                category = "action" if path == "/api/action" else (
+                    "artwork" if path.startswith("/api/artwork/") else "read")
                 limits.rate((category, user_id), per_minute=60 if category == "action" else 240,
                             burst=10 if category == "action" else 80)
                 limits.rate((category, "global"), per_minute=300 if category == "action" else 1200,
                             burst=20 if category == "action" else 160)
-                async with limits.slot(category, user_id, total=4 if category == "action" else 32,
-                                       individual=1 if category == "action" else 16):
-                    response = await dispatch()
+                total, individual = {"action": (4, 1), "read": (32, 16), "artwork": (64, 48)}[category]
+                async with limits.slot(category, user_id, total=total, individual=individual):
+                    if category == "artwork":
+                        # Admit a full catalog page while bounding upstream fan-out.
+                        # Artwork cannot consume slots needed for playback controls.
+                        async with artwork_slots:
+                            response = await dispatch()
+                    else:
+                        response = await dispatch()
             else:
                 response = await dispatch()
         except Problem as e:
@@ -126,8 +134,15 @@ def create_app(config: Settings | None = None, *, start_services: bool = True) -
         image_urls = [fluxer.media, *(fluxer.brand.get(key) for key in
                                       ("logo", "icon", "favicon", "favicon_dark", "backdrop"))]
         image_origins = sorted({f"{urlsplit(url).scheme}://{urlsplit(url).netloc}" for url in image_urls if url})
-        response.headers.update({
-            "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer",
+        # Only successful artwork may be reused by the browser. Keep errors,
+        # catalog data, and authenticated API responses out of browser caches.
+        response.headers["Cache-Control"] = (
+            "private, max-age=3600" if request.url.path.startswith("/api/artwork/")
+            and request.method in {"GET", "HEAD"} and response.status_code == 200 else "no-store"
+        )
+        if request.url.path.startswith("/api/artwork/"):
+            response.headers.add_vary_header("Cookie")
+        response.headers.update({ "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer",
             "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self'; "
             f"img-src 'self' data: {' '.join(image_origins)}; connect-src 'self'; "
             "frame-ancestors 'none'; base-uri 'none'; form-action 'self'",

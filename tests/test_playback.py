@@ -115,6 +115,12 @@ async def test_seek_cancels_old_generation_and_tracks_preserve_pause(player):
     assert player.state == "paused" and player.position == 25
     assert player.generation > generation
     assert player.worker.commands[-1][1]["paused"]
+    for subtitle in (2, -1):
+        await player.action(USER, Action(action="tracks", key=key, audio=1, subtitle=subtitle))
+        assert player.state == "paused" and player.position == 25
+        assert player.source.seek == player.source.offset == 25
+        assert player.subtitle == subtitle
+        assert player.worker.commands[-1][1]["paused"]
     task = asyncio.create_task(player.handle_events())
     player.worker_event({"event": "ended", "generation": generation})
     await asyncio.sleep(.01)
@@ -202,6 +208,12 @@ async def test_presence_only_exposes_actively_playing_title(player):
         player.state = state
         assert player.fluxer.now_playing() is None
     player.state = "playing"
+    assert player.fluxer.now_playing() == "Movie"
+    player.current = {"type": "Episode", "title": "Pilot", "series": "Example Show"}
+    assert player.fluxer.now_playing() == "Example Show - Pilot"
+    player.current["series"] = None
+    assert player.fluxer.now_playing() == "Pilot"
+    player.current = {"type": "Movie", "title": "Movie", "series": "Collection"}
     assert player.fluxer.now_playing() == "Movie"
     player.reconnect = True
     assert player.fluxer.now_playing() is None

@@ -253,7 +253,10 @@ class Jellyfin:
                 raise Problem(422, "Enable Jellyfin transcoding for this title or subtitle selection.")
             method = "Transcode"
         return Source(item_id, sid, result["PlaySessionId"], self.media_url(path), self.headers,
-                      offset, offset if direct else 0, audio, subtitle, method, not direct)
+                      # Jellyfin VOD HLS covers the whole title, even when PlaybackInfo
+                      # receives StartTimeTicks. The demuxer must seek within it.
+                      offset, offset if direct or urlsplit(path).path.endswith(".m3u8") else 0,
+                      audio, subtitle, method, not direct)
 
     async def report(self, source: Source, event: str, seconds: float, paused: bool = False) -> None:
         body = {"ItemId": source.item_id, "MediaSourceId": source.media_source_id,

@@ -113,3 +113,50 @@ test('instance theme and requester identities survive image failures', async ({ 
   expect(await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--accent').trim())).toBe('#ec4899');
   await expect(page.locator('body')).not.toContainText('Fluxer');
 });
+
+
+test('failed artwork retries the same URL and recovers', async ({ page }) => {
+  await setup(page);
+  await page.clock.install();
+  await page.route('**/api/items?**', route => route.fulfill({ json: {
+    items: [{ ...items[0], artwork: '/api/artwork/poster' }], total: 1,
+  } }));
+  let requests = 0;
+  await page.route('**/api/artwork/poster', route => {
+    requests++;
+    return requests === 1 ? route.fulfill({ status: 429, headers: { 'Retry-After': '5' }, body: '' })
+      : route.fulfill({ contentType: 'image/svg+xml',
+          body: '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="60"><rect width="40" height="60" fill="red"/></svg>' });
+  });
+  await page.goto('/');
+  await expect.poll(() => requests).toBe(1);
+  await expect(page.locator('.title-card .poster-fallback')).toBeVisible();
+  await page.clock.runFor(6500);
+  await expect(page.locator('.title-card .poster img')).toBeVisible();
+  await expect.poll(() => page.locator('.title-card .poster img').evaluate(
+    (img: HTMLImageElement) => img.complete && img.naturalWidth > 0)).toBe(true);
+  expect(requests).toBe(2);
+});
+
+test('permanently missing artwork stops retrying', async ({ page }) => {
+  await setup(page);
+  await page.clock.install();
+  await page.route('**/api/items?**', route => route.fulfill({ json: {
+    items: [{ ...items[0], artwork: '/api/artwork/missing' }], total: 1,
+  } }));
+  let requests = 0;
+  await page.route('**/api/artwork/missing', route => {
+    requests++;
+    return route.fulfill({ status: 404, body: '' });
+  });
+  await page.goto('/');
+  await expect.poll(() => requests).toBe(1);
+  for (const [index, delay] of [6500, 11500, 21500].entries()) {
+    await expect(page.locator('.title-card .poster-fallback')).toBeVisible();
+    await page.clock.runFor(delay);
+    await expect.poll(() => requests).toBe(index + 2);
+  }
+  await page.clock.runFor(60000);
+  expect(requests).toBe(4);
+  await expect(page.locator('.title-card .poster-fallback')).toBeVisible();
+});

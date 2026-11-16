@@ -62,9 +62,18 @@ async function api<T>(path: string, body?: object, signal?: AbortSignal): Promis
 
 function Poster({ item, large = false }: { item: Item; large?: boolean }) {
   const [failed, setFailed] = useState(false);
-  useEffect(() => setFailed(false), [item.id]);
+  const [attempt, setAttempt] = useState(0);
+  useEffect(() => { setFailed(false); setAttempt(0); }, [item.id, item.artwork]);
+  useEffect(() => {
+    if (!failed || attempt >= 3) return;
+    // A rate-limit response asks clients to wait at least five seconds.
+    // Remount the same URL so successful responses still use the browser cache.
+    const timer = setTimeout(() => { setAttempt(n => n + 1); setFailed(false); },
+      5000 * 2 ** attempt + Math.random() * 1000);
+    return () => clearTimeout(timer);
+  }, [failed, attempt, item.id, item.artwork]);
   return <div className={`poster ${large ? 'large' : ''}`}>
-    {item.artwork && !failed ? <img src={item.artwork} alt="" loading="lazy" onError={() => setFailed(true)} /> :
+    {item.artwork && !failed ? <img key={attempt} src={item.artwork} alt="" loading="lazy" onError={() => setFailed(true)} /> :
       <div className="poster-fallback"><Film size={large ? 56 : 32} strokeWidth={1} /><span>{item.title}</span></div>}
     <span className="poster-type">{item.type === 'Series' ? 'SERIES' : item.type === 'Episode' ? `EPISODE ${item.episode ?? ''}` : item.year ?? 'FILM'}</span>
   </div>;
