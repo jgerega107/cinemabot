@@ -66,11 +66,14 @@ class Playback:
                 "position": self.position, "volume": self.volume, "audio": self.audio,
                 "subtitle": self.subtitle, "channel": self.channel,
                 "channel_name": channel.get("name", self.channel),
-                "can_control": bool(self.fluxer.control_channel(user_id, self.channel)),
+                "can_request": self.config.can_request(user_id),
+                "can_control": self.config.can_request(user_id) and bool(self.fluxer.control_channel(user_id, self.channel)),
                 "available": self.fluxer.ready and self.jellyfin.ready,
                 "error": self.error, "metrics": self.metrics}
 
     def authorize(self, user_id: str, channel: str | None = None) -> str:
+        if not self.config.can_request(user_id):
+            raise Problem(403, "You have read-only access. Ask an administrator for permission to request titles and control playback.")
         found = self.fluxer.control_channel(user_id, self.channel or channel)
         if not found or (channel and found != channel):
             raise Problem(403, "Join the active voice channel to control playback.")

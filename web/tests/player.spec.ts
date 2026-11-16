@@ -6,10 +6,10 @@ const items = titles.map((title, i) => ({ id: id(i + 1), title, type: i === 5 ? 
   overview: 'An unexpected journey brings old friends together, finding a little wonder in the places they thought they knew.',
   duration: 5400 + i * 120, audio: [{ index: 1, title: 'English · Stereo' }], subtitles: [{ index: 2, title: 'English' }], artwork: null }));
 const basePlayer = { current: null, queue: [], state: 'idle', position: 0, volume: 70, audio: 1, subtitle: -1,
-  channel_name: null, can_control: true, available: true, error: '', metrics: {} };
+  channel_name: null, can_request: true, can_control: true, available: true, error: '', metrics: {} };
 
-async function setup(page: Page, options: { loggedIn?: boolean; control?: boolean; playing?: boolean } = {}) {
-  const state: any = { ...basePlayer, can_control: options.control ?? true };
+async function setup(page: Page, options: { loggedIn?: boolean; control?: boolean; playing?: boolean; readOnly?: boolean } = {}) {
+  const state: any = { ...basePlayer, can_request: !options.readOnly, can_control: !options.readOnly && (options.control ?? true) };
   if (options.playing) Object.assign(state, { current: { ...items[0], key: 'current', requested_by: 'Alex', requester: { id: '123', name: 'Alex', avatar: '/test-avatar.svg' } }, state: 'playing', position: 1340, channel_name: 'Movie night', queue: [{ ...items[2], key: 'queued', requested_by: 'Sam', requester: { id: '456', name: 'Sam', avatar: '/missing-avatar.png' } }] });
   const actions: any[] = [];
   // Deterministic SSE source: production uses the real same-origin EventSource endpoint.
@@ -88,6 +88,27 @@ test('viewers outside voice cannot use controls', async ({ page }) => {
   await expect(page.getByLabel('Playback position')).toBeDisabled();
   await expect(page.getByLabel('Subtitle track')).toBeDisabled();
   await expect(page.getByText('Join Movie night to use the controls.')).toBeVisible();
+});
+
+test('read-only members can browse but cannot request or change playback', async ({ page }) => {
+  const actions = await setup(page, { readOnly: true, playing: true });
+  await page.goto('/');
+  await expect(page.getByText('You have read-only access. Ask an administrator for permission to request titles and control playback.')).toBeVisible();
+  for (const name of ['Pause', 'Stop and disconnect', 'Skip title', 'Remove Sunday in the City']) {
+    await expect(page.getByRole('button', { name, exact: true })).toBeDisabled();
+  }
+  for (const label of ['Playback position', 'Shared volume', 'Audio track', 'Subtitle track']) {
+    await expect(page.getByLabel(label)).toBeDisabled();
+  }
+  await page.getByRole('textbox', { name: 'Search library' }).fill('Lighthouse');
+  await expect(page.locator('.title-card')).toHaveCount(1);
+  await page.locator('.title-card').click();
+  await expect(page.getByRole('dialog')).toBeVisible();
+  await expect(page.getByRole('dialog').getByRole('button', { name: 'Play now', exact: true })).toBeDisabled();
+  await expect(page.getByRole('dialog').getByRole('button', { name: 'Add to queue' })).toBeDisabled();
+  await expect(page.getByRole('dialog')).toContainText('You have read-only access.');
+  await expect(page.getByRole('dialog')).not.toContainText('Join the active voice channel');
+  expect(actions).toEqual([]);
 });
 
 test('shared controls and track selection', async ({ page }, testInfo) => {
