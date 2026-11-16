@@ -189,3 +189,18 @@ def test_vod_hls_seek_preserves_picture_and_timeline(tmp_path):
     assert frames[-1].time == pytest.approx(1.56, abs=.05)
     # Verify actual content, not just a relabeled clock: at 4.4s RGB is ~130.
     assert np.frombuffer(frames[0].data[:160 * 90], dtype=np.uint8).mean() > 110
+
+
+def test_explicit_missing_audio_does_not_silently_play_another_track(clip):
+    with pytest.raises(ValueError, match="Selected audio stream"):
+        Decoder({"url": str(clip), "audio_index": 99})
+
+
+def test_audio_ordinal_wins_over_jellyfin_global_index(clip):
+    # Jellyfin can report audio index 2 even when the file's audio index is 1.
+    decoder = Decoder({"url": str(clip), "audio_index": 2, "audio_ordinal": 0})
+    try:
+        assert decoder.audio.index == 1
+        assert any(frame.kind == "audio" for frame in decoder.frames())
+    finally:
+        decoder.close()
