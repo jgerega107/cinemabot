@@ -280,3 +280,31 @@ async def test_ambiguous_request_rejected(player, youtube):
     with pytest.raises(Problem):
         await player.action(USER, Action(action="add", item_id=ID, url="https://youtu.be/BaW_jenozKc"))
     youtube.items.assert_not_awaited()
+
+
+@pytest.mark.parametrize("position", [60, 61])
+@pytest.mark.parametrize("state", ["playing", "paused"])
+async def test_invalid_youtube_seek_preserves_playback(player, monkeypatch, position, state):
+    from unittest.mock import AsyncMock
+
+    # Exercise the real resolver; only extraction is stubbed. Queue metadata is
+    # deliberately stale so validation must use the freshly extracted duration.
+    monkeypatch.setattr(player.youtube, "extract", AsyncMock(return_value={
+        "id": "BaW_jenozKc", "title": "Video", "duration": 60,
+        "url": "https://r1.googlevideo.com/videoplayback"}))
+    await player.action(USER, Action(action="play", url="https://youtu.be/BaW_jenozKc"))
+    await player.action(USER, Action(action="add", item_id=ID))
+    player.current["duration"] = 120
+    player.state, player.position = state, 10
+    before = player.snapshot("u")
+    source, process, generation = player.source, player.worker.process, player.generation
+    commands = list(player.worker.commands)
+
+    with pytest.raises(Problem, match="Seek position is outside") as error:
+        await player.action(USER, Action(action="seek", key=player.current["key"], position=position))
+
+    assert error.value.status == 400
+    assert player.snapshot("u") == before
+    assert player.source is source and player.worker.process is process
+    assert player.generation == generation and player.worker.commands == commands
+    assert not player.jellyfin.released
