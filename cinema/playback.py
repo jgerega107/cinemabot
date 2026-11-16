@@ -31,7 +31,7 @@ class Action(BaseModel):
 class Playback:
     def __init__(self, config, fluxer, jellyfin: Jellyfin, supervisor_factory=Supervisor):
         self.config, self.fluxer, self.jellyfin = config, fluxer, jellyfin
-        self.youtube = YouTube()
+        self.youtube = YouTube(enabled="youtube" in config.allowed_link_providers.split(","))
         self.worker = supervisor_factory(self.worker_event)
         self.lock = asyncio.Lock()
         self.queue: list[dict] = []
