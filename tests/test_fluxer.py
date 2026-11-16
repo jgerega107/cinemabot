@@ -98,3 +98,21 @@ async def test_presence_tracks_playback_clears_idle_and_refreshes(config, monkey
         sleeps = 4
         await fluxer.presence()
     assert sent[-1][1]["custom_status"] == {"text": "Watching Next movie"}
+
+
+@pytest.mark.parametrize("data", [[], [{"status": "online"}], None])
+def test_unrelated_dispatch_payloads_preserve_membership(config, data):
+    fluxer = Fluxer(config, None)
+    fluxer.dispatch("READY", {})
+    fluxer.dispatch("GUILD_CREATE", {"id": "guild", "channels": [{"id": "a", "type": 2}],
+        "voice_states": [{"user_id": "u", "channel_id": "a"}]})
+    for _ in range(5):
+        fluxer.dispatch("SESSIONS_REPLACE", data)
+    assert fluxer.ready
+    assert fluxer.control_channel("u") == "a"
+
+
+def test_malformed_authorization_event_is_not_silently_ignored(config):
+    fluxer = Fluxer(config, None)
+    with pytest.raises(ValueError):
+        fluxer.dispatch("GUILD_SYNC", [])

@@ -160,3 +160,32 @@ test('permanently missing artwork stops retrying', async ({ page }) => {
   expect(requests).toBe(4);
   await expect(page.locator('.title-card .poster-fallback')).toBeVisible();
 });
+
+
+test('failed season navigation clears stale cards and retries without duplicate breadcrumbs', async ({ page }) => {
+  await setup(page);
+  const show = { ...items[5], title: 'The Office' };
+  const season = { ...items[0], id: id(70), title: 'Season 1', type: 'Season' };
+  let seasonAttempts = 0;
+  await page.route('**/api/items?**', route => {
+    const parent = new URL(route.request().url()).searchParams.get('parent');
+    if (parent === season.id) {
+      seasonAttempts++;
+      if (seasonAttempts === 1) return route.fulfill({ status: 503,
+        json: { error: 'Gammy Land membership is being synchronized.' } });
+      return route.fulfill({ json: { items: [{ ...items[0], type: 'Episode', title: 'Pilot' }], total: 1 } });
+    }
+    return route.fulfill({ json: { items: parent === show.id ? [season] : [show], total: 1 } });
+  });
+  await page.goto('/');
+  await page.locator('.title-card').filter({ hasText: 'The Office' }).click();
+  await page.locator('.title-card').filter({ hasText: 'Season 1' }).click();
+  await expect(page.getByRole('heading', { name: 'Could not load titles' })).toBeVisible();
+  await expect(page.locator('.title-card')).toHaveCount(0);
+  await expect(page.getByRole('navigation', { name: 'Library navigation' })
+    .getByRole('button', { name: 'Season 1', exact: true })).toHaveCount(1);
+  await page.getByRole('button', { name: 'Retry loading titles' }).click();
+  await expect(page.locator('.title-card').filter({ hasText: 'Pilot' })).toBeVisible();
+  expect(seasonAttempts).toBe(2);
+  await expect(page.locator('.breadcrumbs button')).toHaveText(['Library', 'The Office', 'Season 1']);
+});

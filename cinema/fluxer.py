@@ -164,7 +164,15 @@ class Fluxer:
                                     "channel_id": None, "connection_id": self.connection_id})
         self.connection_id = self.channel_id = None
 
-    def dispatch(self, event: str, data: dict) -> None:
+    def dispatch(self, event: str, data) -> None:
+        # Some unrelated dispatches (e.g. SESSIONS_REPLACE) contain arrays.
+        # Only interpret payloads for events this client actually consumes.
+        if event not in {"READY", "GUILD_CREATE", "GUILD_SYNC", "GUILD_DELETE",
+                         "GUILD_MEMBER_REMOVE", "VOICE_STATE_UPDATE", "VOICE_SERVER_UPDATE",
+                         "CHANNEL_CREATE", "CHANNEL_UPDATE", "CHANNEL_DELETE"}:
+            return
+        if not isinstance(data, dict):
+            raise ValueError("Expected an object for a membership or voice event")
         was_ready = self.ready
         if event == "READY":
             self.online = True
