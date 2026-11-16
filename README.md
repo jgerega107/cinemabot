@@ -177,3 +177,40 @@ The bot's custom status shows "Watching <title>" only while a title is actively
 playing. Pausing, buffering/loading, stopping, or a playback error clears it.
 Updates are deduplicated, checked every two seconds, and refreshed on reconnect.
 The public player URL belongs in the owner-managed profile bio, not the status.
+
+
+## YouTube videos and playlists
+
+Paste an HTTPS YouTube video, Shorts, youtu.be, or playlist link into the player.
+**Add to queue** appends videos in playlist order, starting the first if idle.
+**Play now** replaces the current title and appends the remaining playlist videos
+behind the existing queue. Links with a `list` parameter request the playlist;
+remove that parameter to request only the video. Requests are all-or-nothing
+when there is insufficient queue space (250 waiting titles; 250 videos per playlist).
+Private/unavailable entries identified during expansion are omitted. A video
+that fails later stays selected for retry or skip. Requester credits, pause,
+resume, seek, volume, reorder, skip, and stop also work with mixed queues.
+
+Extraction uses the same pinned yt-dlp and EJS versions as musicbot, with Deno
+for JavaScript challenges. These dependencies are included in the image. No
+cookies, accounts, remote EJS downloads, or additional environment settings are
+needed for public videos. The server needs outbound HTTPS to YouTube and its
+Google video CDN. YouTube can still reject datacenter IPs or restrict videos.
+
+The worker streams a combined video/audio format capped at 1080p without
+pre-downloading the video. Available combined formats may be lower resolution;
+separate DASH audio/video merging is not supported. Signed URLs and headers
+stay server-side and are refreshed on start, seek, and error recovery. Unlike
+musicbot's audio cache, this does not consume disk space for full recordings.
+Live/upcoming streams, private/login-required videos, custom subtitle/audio
+selection, search queries, and non-YouTube sites are outside this version.
+
+Extraction runs with a sanitized environment, private temporary home, no user
+configuration/plugins, a 45-second deadline, and bounded JSON output. Public
+queue metadata never includes CDN URLs or headers. The existing Linux media
+worker confinement still applies. Extraction itself is a separate subprocess,
+not the confined decoder; keep yt-dlp/EJS/Deno updated together.
+
+Before deploying, verify a public video and playlist on your server, including
+picture/sound in Fluxer, pause/resume, seek, mixed queue advance, and unavailable
+video recovery. Mock tests do not prove YouTube availability from your server.
