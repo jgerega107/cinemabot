@@ -122,7 +122,7 @@ jobs:
           load: ${{ github.event_name == 'pull_request' }}
           tags: ${{ github.event_name == 'pull_request' && 'bot:test' || env.CANDIDATE }}
           labels: ${{ steps.meta.outputs.labels }}
-          provenance: ${{ github.event_name != 'pull_request' && 'mode=max' || 'false' }}
+          provenance: ${{ github.event_name != 'pull_request' && 'mode=max,version=v1' || 'false' }}
           sbom: ${{ github.event_name != 'pull_request' }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -198,11 +198,11 @@ jobs:
           set -euo pipefail
           docker buildx imagetools inspect "$IMAGE@$DIGEST" --format '{{json .Provenance.SLSA}}' > "$RUNNER_TEMP/provenance.json"
           docker buildx imagetools inspect "$IMAGE@$DIGEST" --format '{{json .SBOM.SPDX}}' > "$RUNNER_TEMP/sbom.json"
-          jq -e '.buildType and .builder' "$RUNNER_TEMP/provenance.json" > /dev/null
+          jq -e '.buildDefinition.buildType and .runDetails.builder' "$RUNNER_TEMP/provenance.json" > /dev/null
           jq -e '.spdxVersion and .SPDXID' "$RUNNER_TEMP/sbom.json" > /dev/null
-          cosign attest --yes --type slsaprovenance --predicate "$RUNNER_TEMP/provenance.json" "$IMAGE@$DIGEST"
+          cosign attest --yes --type slsaprovenance1 --predicate "$RUNNER_TEMP/provenance.json" "$IMAGE@$DIGEST"
           cosign attest --yes --type spdxjson --predicate "$RUNNER_TEMP/sbom.json" "$IMAGE@$DIGEST"
-          for kind in slsaprovenance spdxjson; do
+          for kind in slsaprovenance1 spdxjson; do
             cosign verify-attestation --type "$kind" "$IMAGE@$DIGEST" \
               --certificate-identity "$WORKFLOW_IDENTITY" \
               --certificate-oidc-issuer https://token.actions.githubusercontent.com

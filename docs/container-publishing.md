@@ -37,7 +37,7 @@ For a version-tag run, use @refs/tags/vVERSION in the certificate identity.
 Repository or workflow renames change that identity. GitHub artifact attestations
 are not used: that service does not support user-owned private repositories.
 Verify the signed provenance/SBOM with cosign verify-attestation, using the same
-certificate identity and issuer and --type slsaprovenance or --type spdxjson.
+certificate identity and issuer and --type slsaprovenance1 or --type spdxjson.
 
 References:
 - https://docs.docker.com/learn/content/build-a-trusted-delivery-pipeline/
