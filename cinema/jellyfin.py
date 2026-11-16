@@ -202,7 +202,7 @@ class Jellyfin:
                 raise Problem(400, f"Selected {kind.lower()} track is unavailable.")
         hdr = any(s.get("VideoRangeType", "SDR") not in {None, "SDR", "Unknown"} or
                   s.get("VideoRange") == "HDR" for s in streams if s.get("Type") == "Video")
-        transcode = subtitle >= 0 or hdr
+        transcode = self.config.jellyfin_force_transcode or subtitle >= 0 or hdr
         profile = {
             "Name": "Fluxer Cinema", "MaxStreamingBitrate": 200_000_000,
             "DirectPlayProfiles": [{"Container": "mkv,mp4,mov,webm,avi,ts,mpegts", "Type": "Video",
@@ -221,7 +221,7 @@ class Jellyfin:
         body = {"UserId": self.config.jellyfin_user_id, "StartTimeTicks": int(offset * TICKS),
                 "IsPlayback": True, "AutoOpenLiveStream": False,
                 "EnableDirectPlay": not transcode, "EnableDirectStream": not transcode,
-                "EnableTranscoding": True, "DeviceProfile": profile,
+                "EnableTranscoding": True, "AllowVideoStreamCopy": not transcode, "DeviceProfile": profile,
                 "AudioStreamIndex": audio, "SubtitleStreamIndex": subtitle,
                 "AlwaysBurnInSubtitleWhenTranscoding": True, "MaxAudioChannels": 2,
                 "MaxStreamingBitrate": self.config.video_bitrate + 256_000 if transcode else 200_000_000}
@@ -235,6 +235,7 @@ class Jellyfin:
                          for s in source.get("MediaStreams", []) if s.get("Type") == "Video")
         if source_hdr and not transcode:
             body.update(EnableDirectPlay=False, EnableDirectStream=False,
+                        AllowVideoStreamCopy=False,
                         MaxStreamingBitrate=self.config.video_bitrate + 256_000)
             result = await self.request("POST", f"/Items/{item_id}/PlaybackInfo", json=body)
             if result.get("ErrorCode") or not result.get("MediaSources"):
@@ -264,7 +265,9 @@ class Jellyfin:
         else:
             path = source.get("TranscodingUrl")
             if not path:
-                raise Problem(422, "Enable Jellyfin transcoding for this title or subtitle selection.")
+                raise Problem(422, "Jellyfin could not provide a transcoded stream. Enable video transcoding "
+                              "for the dedicated Jellyfin user, or set JELLYFIN_FORCE_TRANSCODE=false "
+                              "to allow direct playback when subtitles and HDR do not require transcoding.")
             # Generated URLs can contain defaults that disagree with PlaybackInfo's
             # requested tracks. Make the validated selection authoritative and bind
             # the URL to this session so switches cannot reuse an old transcode.
@@ -274,6 +277,11 @@ class Jellyfin:
                          "MediaSourceId": sid,
                          "SubtitleMethod": "Encode" if subtitle >= 0 else None,
                          "AlwaysBurnInSubtitleWhenTranscoding": "true" if subtitle >= 0 else "false"}
+            # Require actual video encoding rather than an HLS remux of the source.
+            # Bound decoding work to the bot's output dimensions and frame rate.
+            overrides.update(VideoCodec="h264", AllowVideoStreamCopy="false", EnableAutoStreamCopy="false",
+                             MaxWidth=1920, MaxHeight=1080, MaxFramerate=30,
+                             VideoBitRate=self.config.video_bitrate)
             replaced = {key.lower() for key in overrides}
             query = [(key, value) for key, value in parse_qsl(parsed.query, keep_blank_values=True)
                      if key.lower() not in replaced]

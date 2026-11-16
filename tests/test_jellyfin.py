@@ -19,8 +19,11 @@ def test_public_metadata_excludes_paths_credentials():
     assert result["duration"] == 120 and result["audio"][0]["index"] == 1
 
 
-@pytest.mark.parametrize("subtitle,transcode", [(-1, False), (2, True)])
-async def test_playback_negotiation_and_private_urls(config, subtitle, transcode):
+@pytest.mark.parametrize("force,subtitle,transcode", [
+    (True, -1, True), (True, 2, True), (False, -1, False), (False, 2, True),
+])
+async def test_playback_negotiation_and_private_urls(config, force, subtitle, transcode):
+    config.jellyfin_force_transcode = force
     requests = []
     def remote(request):
         requests.append(request)
@@ -35,6 +38,9 @@ async def test_playback_negotiation_and_private_urls(config, subtitle, transcode
         source = await jellyfin.resolve(ID, 10, 1, subtitle)
     body = json.loads(requests[-1].content)
     assert body["EnableDirectPlay"] is not transcode
+    assert body["EnableDirectStream"] is not transcode
+    assert body["AllowVideoStreamCopy"] is not transcode
+    assert body["MaxStreamingBitrate"] == (config.video_bitrate + 256_000 if transcode else 200_000_000)
     assert source.transcoded is transcode
     assert source.seek == 10
     assert source.worker()["seek"] == source.worker()["offset"] == 10
@@ -98,6 +104,7 @@ async def test_catalog_and_playback_wait_for_account_verification(config):
 
 
 async def test_hdr_reported_only_by_playback_info_forces_transcode(config):
+    config.jellyfin_force_transcode = False
     bodies = []
     def remote(request):
         if "PlaybackInfo" in request.url.path:
@@ -111,6 +118,7 @@ async def test_hdr_reported_only_by_playback_info_forces_transcode(config):
         jellyfin.ready = True
         source = await jellyfin.resolve(ID, 0, None, -1)
     assert len(bodies) == 2 and bodies[-1]["EnableDirectPlay"] is False
+    assert bodies[-1]["AllowVideoStreamCopy"] is False
     assert source.transcoded and "m3u8" in source.url
 
 
@@ -171,7 +179,9 @@ async def test_transcoded_track_switch_overrides_stale_url_defaults(config, audi
                 "SupportsDirectPlay": False, "TranscodingUrl": (
                     "/Videos/test/master.m3u8?AudioStreamIndex=1&audiostreamindex=1"
                     "&SubtitleStreamIndex=2&SubtitleMethod=External&PlaySessionId=old-session"
-                    "&DeviceId=old-device&VideoCodec=h264&api_key=private-key")}]})
+                    "&DeviceId=old-device&VideoCodec=hevc&videocodec=copy&api_key=private-key"
+                    "&AllowVideoStreamCopy=true&enableautostreamcopy=true&MaxWidth=3840"
+                    "&maxwidth=4096&MaxHeight=2160&MaxFramerate=60&VideoBitRate=40000000")}]})
         return httpx.Response(200, json=item)
     async with httpx.AsyncClient(transport=httpx.MockTransport(remote)) as http:
         jf = Jellyfin(config, http)
@@ -183,6 +193,11 @@ async def test_transcoded_track_switch_overrides_stale_url_defaults(config, audi
     assert query["playsessionid"] == ["new-session"]
     assert query["deviceid"] == [jf.device_id]
     assert query["videocodec"] == ["h264"] and query["api_key"] == ["private-key"]
+    assert query["allowvideostreamcopy"] == ["false"]
+    assert query["enableautostreamcopy"] == ["false"]
+    assert query["maxwidth"] == ["1920"] and query["maxheight"] == ["1080"]
+    assert query["maxframerate"] == ["30"]
+    assert query["videobitrate"] == [str(config.video_bitrate)]
     assert query.get("subtitlemethod") == (["Encode"] if subtitle >= 0 else None)
     assert src.audio_index == expected and src.worker()["audio_index"] is None
     assert src.seek == src.offset == 10
@@ -190,6 +205,7 @@ async def test_transcoded_track_switch_overrides_stale_url_defaults(config, audi
 
 @pytest.mark.parametrize("selected,expected,ordinal", [(None, 2, 0), (2, 2, 0), (3, 3, 1), (4, 4, 2)])
 async def test_direct_audio_uses_audio_order_not_global_jellyfin_index(config, selected, expected, ordinal):
+    config.jellyfin_force_transcode = False
     streams = [{"Type": "Subtitle", "Index": 0}, {"Type": "Video", "Index": 1},
                {"Type": "Audio", "Index": 2, "IsDefault": True},
                {"Type": "Audio", "Index": 3}, {"Type": "Audio", "Index": 4}]
@@ -206,3 +222,25 @@ async def test_direct_audio_uses_audio_order_not_global_jellyfin_index(config, s
     assert src.audio_index == expected
     assert src.worker()["audio_ordinal"] == ordinal
     assert not src.transcoded
+
+
+async def test_default_transcode_does_not_fall_back_to_direct_without_transcode_url(config):
+    assert config.jellyfin_force_transcode is True
+    def remote(request):
+        if "PlaybackInfo" in request.url.path:
+            return httpx.Response(200, json={"PlaySessionId": "session", "MediaSources": [{
+                "Id": "source", "SupportsDirectPlay": True}]})
+        return httpx.Response(200, json=ITEM)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(remote)) as http:
+        jf = Jellyfin(config, http)
+        jf.ready = True
+        with pytest.raises(Problem, match="Enable video transcoding") as error:
+            await jf.resolve(ID, 0, None, -1)
+    assert error.value.status == 422
+
+
+@pytest.mark.parametrize("value,expected", [("true", True), ("false", False)])
+def test_force_transcode_environment_setting(config, monkeypatch, value, expected):
+    monkeypatch.setenv("JELLYFIN_FORCE_TRANSCODE", value)
+    settings = type(config)(_env_file=None, **config.model_dump(exclude={"jellyfin_force_transcode"}))
+    assert settings.jellyfin_force_transcode is expected
