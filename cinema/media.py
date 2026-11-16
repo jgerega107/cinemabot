@@ -35,7 +35,15 @@ class Decoder:
             self.container.close()
             raise ValueError("No video stream")
         self.video = videos[0]
-        self.audio = next((s for s in self.container.streams.audio if s.index == spec.get("audio_index")), None)
+        ordinal = spec.get("audio_ordinal")
+        if ordinal is not None:
+            tracks = self.container.streams.audio
+            self.audio = tracks[ordinal] if isinstance(ordinal, int) and 0 <= ordinal < len(tracks) else None
+        else:
+            self.audio = next((s for s in self.container.streams.audio if s.index == spec.get("audio_index")), None)
+        if self.audio is None and (ordinal is not None or spec.get("audio_index") is not None):
+            self.container.close()
+            raise ValueError("Selected audio stream is missing from the media")
         if self.audio is None and self.container.streams.audio:
             self.audio = self.container.streams.audio[0]
         self.width, self.height = dimensions(self.video.width, self.video.height,

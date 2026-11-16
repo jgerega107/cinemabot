@@ -2,7 +2,7 @@ import asyncio
 import contextlib
 import logging
 from dataclasses import dataclass
-from urllib.parse import urlencode, urljoin, urlsplit
+from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 from uuid import UUID
 
 import httpx
@@ -74,10 +74,12 @@ class Source:
     subtitle_index: int
     method: str
     transcoded: bool
+    audio_ordinal: int | None = None
 
     def worker(self) -> dict:
         return {"url": self.url, "headers": self.headers, "offset": self.offset,
-                "seek": self.seek, "audio_index": None if self.transcoded else self.audio_index}
+                "seek": self.seek, "audio_index": None if self.transcoded else self.audio_index,
+                "audio_ordinal": None if self.transcoded else self.audio_ordinal}
 
 
 class Jellyfin:
@@ -242,7 +244,19 @@ class Jellyfin:
         if source.get("RequiresOpening"):
             raise Problem(422, "Live and externally opened media sources are not supported.")
         sid = source["Id"]
-        audio = audio if audio is not None else source.get("DefaultAudioStreamIndex")
+        source_streams = source.get("MediaStreams") or streams
+        audio_tracks = [s for s in source_streams if s.get("Type") == "Audio"]
+        if audio is None:
+            audio = source.get("DefaultAudioStreamIndex")
+            if not any(s["Index"] == audio for s in audio_tracks):
+                default = next((s for s in audio_tracks if s.get("IsDefault")), None)
+                audio = (default or (audio_tracks[0] if audio_tracks else {})).get("Index")
+        elif not any(s["Index"] == audio for s in audio_tracks):
+            raise Problem(400, "Selected audio track is unavailable in this media source.")
+        # Jellyfin may group/reindex stream types differently from the file.
+        # Select by position among audio streams, never by the global stream index.
+        audio_tracks.sort(key=lambda stream: stream["Index"])
+        audio_ordinal = next((i for i, stream in enumerate(audio_tracks) if stream["Index"] == audio), None)
         direct = not transcode and (source.get("SupportsDirectPlay") or source.get("SupportsDirectStream"))
         if direct:
             path = f"/Videos/{item_id}/stream?" + urlencode({"Static": "true", "MediaSourceId": sid})
@@ -251,12 +265,26 @@ class Jellyfin:
             path = source.get("TranscodingUrl")
             if not path:
                 raise Problem(422, "Enable Jellyfin transcoding for this title or subtitle selection.")
+            # Generated URLs can contain defaults that disagree with PlaybackInfo's
+            # requested tracks. Make the validated selection authoritative and bind
+            # the URL to this session so switches cannot reuse an old transcode.
+            parsed = urlsplit(path)
+            overrides = {"AudioStreamIndex": audio, "SubtitleStreamIndex": subtitle,
+                         "PlaySessionId": result["PlaySessionId"], "DeviceId": self.device_id,
+                         "MediaSourceId": sid,
+                         "SubtitleMethod": "Encode" if subtitle >= 0 else None,
+                         "AlwaysBurnInSubtitleWhenTranscoding": "true" if subtitle >= 0 else "false"}
+            replaced = {key.lower() for key in overrides}
+            query = [(key, value) for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+                     if key.lower() not in replaced]
+            query.extend((key, str(value)) for key, value in overrides.items() if value is not None)
+            path = urlunsplit(parsed._replace(query=urlencode(query)))
             method = "Transcode"
         return Source(item_id, sid, result["PlaySessionId"], self.media_url(path), self.headers,
                       # Jellyfin VOD HLS covers the whole title, even when PlaybackInfo
                       # receives StartTimeTicks. The demuxer must seek within it.
                       offset, offset if direct or urlsplit(path).path.endswith(".m3u8") else 0,
-                      audio, subtitle, method, not direct)
+                      audio, subtitle, method, not direct, audio_ordinal)
 
     async def report(self, source: Source, event: str, seconds: float, paused: bool = False) -> None:
         body = {"ItemId": source.item_id, "MediaSourceId": source.media_source_id,

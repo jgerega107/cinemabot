@@ -1,4 +1,5 @@
 import json
+from urllib.parse import parse_qs, urlsplit
 
 import httpx
 import pytest
@@ -158,3 +159,50 @@ async def test_inaccessible_parent_artwork_is_not_fetched(config):
         jf.ready = True
         with pytest.raises(Problem, match="Artwork unavailable"):
             await jf.artwork(ID)
+
+
+@pytest.mark.parametrize("audio,subtitle,expected", [(None, -1, 1), (3, -1, 3), (3, 2, 3), (1, -1, 1)])
+async def test_transcoded_track_switch_overrides_stale_url_defaults(config, audio, subtitle, expected):
+    item = {**ITEM, "MediaStreams": [*ITEM["MediaStreams"], {"Type": "Audio", "Index": 3}]}
+    def remote(request):
+        if "PlaybackInfo" in request.url.path:
+            return httpx.Response(200, json={"PlaySessionId": "new-session", "MediaSources": [{
+                "Id": "source", "DefaultAudioStreamIndex": 1, "MediaStreams": item["MediaStreams"],
+                "SupportsDirectPlay": False, "TranscodingUrl": (
+                    "/Videos/test/master.m3u8?AudioStreamIndex=1&audiostreamindex=1"
+                    "&SubtitleStreamIndex=2&SubtitleMethod=External&PlaySessionId=old-session"
+                    "&DeviceId=old-device&VideoCodec=h264&api_key=private-key")}]})
+        return httpx.Response(200, json=item)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(remote)) as http:
+        jf = Jellyfin(config, http)
+        jf.ready = True
+        src = await jf.resolve(ID, 10, audio, subtitle)
+    query = {key.lower(): value for key, value in parse_qs(urlsplit(src.url).query).items()}
+    assert query["audiostreamindex"] == [str(expected)]
+    assert query["subtitlestreamindex"] == [str(subtitle)]
+    assert query["playsessionid"] == ["new-session"]
+    assert query["deviceid"] == [jf.device_id]
+    assert query["videocodec"] == ["h264"] and query["api_key"] == ["private-key"]
+    assert query.get("subtitlemethod") == (["Encode"] if subtitle >= 0 else None)
+    assert src.audio_index == expected and src.worker()["audio_index"] is None
+    assert src.seek == src.offset == 10
+
+
+@pytest.mark.parametrize("selected,expected,ordinal", [(None, 2, 0), (2, 2, 0), (3, 3, 1), (4, 4, 2)])
+async def test_direct_audio_uses_audio_order_not_global_jellyfin_index(config, selected, expected, ordinal):
+    streams = [{"Type": "Subtitle", "Index": 0}, {"Type": "Video", "Index": 1},
+               {"Type": "Audio", "Index": 2, "IsDefault": True},
+               {"Type": "Audio", "Index": 3}, {"Type": "Audio", "Index": 4}]
+    def remote(request):
+        if "PlaybackInfo" in request.url.path:
+            return httpx.Response(200, json={"PlaySessionId": "session", "MediaSources": [{
+                "Id": "source", "DefaultAudioStreamIndex": 2, "SupportsDirectPlay": True,
+                "MediaStreams": streams}]})
+        return httpx.Response(200, json={**ITEM, "MediaStreams": streams})
+    async with httpx.AsyncClient(transport=httpx.MockTransport(remote)) as http:
+        jf = Jellyfin(config, http)
+        jf.ready = True
+        src = await jf.resolve(ID, 10, selected, -1)
+    assert src.audio_index == expected
+    assert src.worker()["audio_ordinal"] == ordinal
+    assert not src.transcoded
