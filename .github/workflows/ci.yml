@@ -40,7 +40,6 @@ jobs:
         run: |
           CINEMA_ENV_FILE=.env.example docker compose --env-file .env.example config --quiet
           kubectl kustomize deploy/kubernetes > /tmp/cinema.yaml
-          kubectl kustomize deploy/kubernetes-intel > /tmp/cinema-intel.yaml
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()
         with:
