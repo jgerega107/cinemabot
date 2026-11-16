@@ -258,7 +258,9 @@ class Jellyfin:
         # Select by position among audio streams, never by the global stream index.
         audio_tracks.sort(key=lambda stream: stream["Index"])
         audio_ordinal = next((i for i, stream in enumerate(audio_tracks) if stream["Index"] == audio), None)
-        direct = not transcode and (source.get("SupportsDirectPlay") or source.get("SupportsDirectStream"))
+        # DirectStream can require remuxing/audio conversion. Only DirectPlay
+        # authorizes opening the original file through the static endpoint.
+        direct = not transcode and source.get("SupportsDirectPlay", False)
         if direct:
             path = f"/Videos/{item_id}/stream?" + urlencode({"Static": "true", "MediaSourceId": sid})
             method = "DirectPlay"
@@ -277,9 +279,10 @@ class Jellyfin:
                          "MediaSourceId": sid,
                          "SubtitleMethod": "Encode" if subtitle >= 0 else None,
                          "AlwaysBurnInSubtitleWhenTranscoding": "true" if subtitle >= 0 else "false"}
-            # Require actual video encoding rather than an HLS remux of the source.
-            # Bound decoding work to the bot's output dimensions and frame rate.
-            overrides.update(VideoCodec="h264", AllowVideoStreamCopy="false", EnableAutoStreamCopy="false",
+            # Remux/audio-only conversion may copy compatible video. Burn-in,
+            # HDR conversion and an explicit force-transcode must actually encode.
+            copy_video = "false" if transcode else "true"
+            overrides.update(VideoCodec="h264", AllowVideoStreamCopy=copy_video, EnableAutoStreamCopy=copy_video,
                              MaxWidth=1920, MaxHeight=1080, MaxFramerate=30,
                              VideoBitRate=self.config.video_bitrate)
             replaced = {key.lower() for key in overrides}

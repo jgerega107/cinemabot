@@ -20,7 +20,7 @@ class Supervisor:
         self.local_file = local_file
         self.scratch = None
 
-    async def connect(self, grant: dict, bitrate: int):
+    async def connect(self, grant: dict, bitrate: int, video_encoder: str = "auto"):
         await self.close()
         self.epoch += 1
         self.closing = False
@@ -35,7 +35,7 @@ class Supervisor:
             sys.executable, "-m", "cinema.worker_entry", *args, stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL, env=env, limit=65536)
         self.reader = asyncio.create_task(self._read())
-        await self.send("connect", grant=grant, bitrate=bitrate)
+        await self.send("connect", grant=grant, bitrate=bitrate, video_encoder=video_encoder)
         try:
             await asyncio.wait_for(self.connected, 25)
         except (TimeoutError, OSError):

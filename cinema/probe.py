@@ -36,7 +36,7 @@ async def probe(args):
             async with asyncio.timeout(45):
                 await ready.wait()
             grant = await fluxer.join(args.channel)
-            await worker.connect(grant, config.video_bitrate)
+            await worker.connect(grant, config.video_bitrate, config.video_encoder)
             if args.item:
                 await jellyfin.check()
                 source = await jellyfin.resolve(args.item, 0, None, -1)
@@ -75,7 +75,9 @@ async def probe(args):
                     if source and len(rows) % 10 == 0:
                         await jellyfin.report(source, "progress", event["position"], event["paused"])
                     if len(rows) % 10 == 0:
-                        print(f"{elapsed:.0f}s: {event['fps']} fps; publisher drift {event['av_drift_ms']} ms")
+                        print(f"{elapsed:.0f}s: {event['fps']} fps; publisher drift {event['av_drift_ms']} ms; "
+                              f"encoder={event.get('encoder_implementation', 'unknown')}; "
+                              f"power_efficient={event.get('encoder_power_efficient', 'unknown')}")
                     if args.exercise_controls:
                         for mark, action in ((30, "pause"), (35, "resume")):
                             if elapsed >= mark and mark not in pauses_done:

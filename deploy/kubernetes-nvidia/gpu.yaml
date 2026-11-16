@@ -1,0 +1,22 @@
+# Requires NVIDIA drivers, Container Toolkit and the NVIDIA device plugin/GPU Operator.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cinema
+spec:
+  template:
+    spec:
+      # Configure this RuntimeClass on the cluster; omit if NVIDIA is the default runtime.
+      runtimeClassName: nvidia
+      containers:
+        - name: cinema
+          env:
+            - name: VIDEO_ENCODER
+              value: nvenc
+            - name: NVIDIA_DRIVER_CAPABILITIES
+              value: compute,video,utility
+          resources:
+            requests:
+              nvidia.com/gpu: "1"
+            limits:
+              nvidia.com/gpu: "1"

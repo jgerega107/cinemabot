@@ -174,7 +174,7 @@ class Playback:
             if not self.worker.process or force_connect or self.channel != channel:
                 await self.worker.close()
                 grant = await self.fluxer.join(channel)
-                await self.worker.connect(grant, self.config.video_bitrate)
+                await self.worker.connect(grant, self.config.video_bitrate, self.config.video_encoder)
                 await self.worker.send("volume", value=self.volume)
             if user_id:
                 self.authorize(user_id, channel)
@@ -260,7 +260,9 @@ class Playback:
                                  message.get("width"), message.get("height"))
                     elif event == "progress" and self.current:
                         self.position = message["position"]
-                        self.metrics = {k: message[k] for k in ("fps", "av_drift_ms") if k in message}
+                        self.metrics = {k: message[k] for k in (
+                            "fps", "av_drift_ms", "encoder_requested", "encoder_implementation",
+                            "encoder_power_efficient") if k in message}
                     elif event == "ended":
                         if self.current:
                             self.position = message.get("position", self.position)

@@ -28,3 +28,16 @@ def test_insecure_opt_in_does_not_allow_other_http_hosts(config, host):
 def test_https_does_not_require_opt_in(config):
     config.public_origin = "https://spacecolonyark:8081"
     config.validate_transport()
+
+
+@pytest.mark.parametrize("encoder", ["auto", "software", "hardware", "vaapi", "nvenc"])
+def test_encoder_environment_setting(config, monkeypatch, encoder):
+    monkeypatch.setenv("VIDEO_ENCODER", encoder)
+    settings = type(config)(_env_file=None, **config.model_dump(exclude={"video_encoder"}))
+    assert settings.video_encoder == encoder
+
+
+def test_invalid_encoder_rejected(config, monkeypatch):
+    monkeypatch.setenv("VIDEO_ENCODER", "not-an-encoder")
+    with pytest.raises(ValueError, match="video_encoder"):
+        type(config)(_env_file=None, **config.model_dump(exclude={"video_encoder"}))

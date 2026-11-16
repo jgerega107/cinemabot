@@ -28,7 +28,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: cinema
-          image: ghcr.io/jgerega107/jellyfin-fluxer-bot:main
+          image: ghcr.io/jgerega107/cinemabot:main
           ports:
             - name: http
               containerPort: 8080

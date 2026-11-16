@@ -39,7 +39,11 @@ jobs:
       - name: Validate deployment examples
         run: |
           CINEMA_ENV_FILE=.env.example docker compose --env-file .env.example config --quiet
+          CINEMA_ENV_FILE=.env.example RENDER_GID=109 docker compose --env-file .env.example -f compose.yaml -f deploy/compose.intel.yaml config --quiet
+          CINEMA_ENV_FILE=.env.example docker compose --env-file .env.example -f compose.yaml -f deploy/compose.nvidia.yaml config --quiet
           kubectl kustomize deploy/kubernetes > /tmp/cinema.yaml
+          kubectl kustomize deploy/kubernetes-intel > /tmp/cinema-intel.yaml
+          kubectl kustomize deploy/kubernetes-nvidia > /tmp/cinema-nvidia.yaml
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()
         with:

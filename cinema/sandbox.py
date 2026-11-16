@@ -8,6 +8,7 @@ import ctypes
 import errno
 import os
 import platform
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -78,13 +79,20 @@ def confine_worker(local_file=None):
                      Path("/etc/nsswitch.conf"), Path("/etc/gai.conf"), Path("/etc/localtime"),
                      Path("/etc/ld.so.cache"), Path("/proc/self"), Path("/proc/thread-self"),
                      Path("/proc/cpuinfo"), Path("/proc/meminfo"), Path("/proc/sys"),
-                     Path("/sys/devices"), Path("/sys/class/drm")}:
+                     Path("/sys/devices"), Path("/sys/class/drm"), Path("/sys/bus/pci"),
+                     Path("/proc/driver/nvidia"), Path("/usr/local/nvidia/lib"),
+                     Path("/usr/local/nvidia/lib64")}:
             allow(path)
         # Only the worker's own temporary directory is writable.
         allow(scratch, read | (1 << 1) | (1 << 4) | (1 << 5) | (1 << 7) | (1 << 8) |
               (1 << 12) | (1 << 13) | (1 << 14))
         for device in ("/dev/null", "/dev/random", "/dev/urandom", "/dev/dri"):
             allow(device, read | (1 << 1) | (1 << 15))
+        # Only GPU nodes injected by the container runtime; never grant /dev wholesale.
+        for device in Path("/dev").glob("nvidia*"):
+            if device.is_char_device() and re.fullmatch(r"nvidia(?:[0-9]+|ctl|-uvm|-uvm-tools)", device.name):
+                allow(device, read | (1 << 1) | (1 << 15))
+        allow("/dev/nvidia-caps", read | (1 << 1) | (1 << 15))
         if local_file:
             allow(Path(local_file).resolve())  # Only the operator's explicit probe file.
         if libc.syscall(446, ruleset, 0):

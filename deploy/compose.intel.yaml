@@ -7,3 +7,4 @@ services:
       - "${RENDER_GID:?Set RENDER_GID to the host render-device group}"
     environment:
       LIBVA_DRIVER_NAME: iHD
+      VIDEO_ENCODER: vaapi

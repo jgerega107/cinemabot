@@ -193,8 +193,9 @@ async def test_transcoded_track_switch_overrides_stale_url_defaults(config, audi
     assert query["playsessionid"] == ["new-session"]
     assert query["deviceid"] == [jf.device_id]
     assert query["videocodec"] == ["h264"] and query["api_key"] == ["private-key"]
-    assert query["allowvideostreamcopy"] == ["false"]
-    assert query["enableautostreamcopy"] == ["false"]
+    copy_video = "false" if subtitle >= 0 else "true"
+    assert query["allowvideostreamcopy"] == [copy_video]
+    assert query["enableautostreamcopy"] == [copy_video]
     assert query["maxwidth"] == ["1920"] and query["maxheight"] == ["1080"]
     assert query["maxframerate"] == ["30"]
     assert query["videobitrate"] == [str(config.video_bitrate)]
@@ -224,8 +225,8 @@ async def test_direct_audio_uses_audio_order_not_global_jellyfin_index(config, s
     assert not src.transcoded
 
 
-async def test_default_transcode_does_not_fall_back_to_direct_without_transcode_url(config):
-    assert config.jellyfin_force_transcode is True
+async def test_forced_transcode_does_not_fall_back_to_direct_without_transcode_url(config):
+    config.jellyfin_force_transcode = True
     def remote(request):
         if "PlaybackInfo" in request.url.path:
             return httpx.Response(200, json={"PlaySessionId": "session", "MediaSources": [{
@@ -244,3 +245,62 @@ def test_force_transcode_environment_setting(config, monkeypatch, value, expecte
     monkeypatch.setenv("JELLYFIN_FORCE_TRANSCODE", value)
     settings = type(config)(_env_file=None, **config.model_dump(exclude={"jellyfin_force_transcode"}))
     assert settings.jellyfin_force_transcode is expected
+
+
+async def test_default_plays_compatible_source_without_requesting_transcode(config):
+    assert config.jellyfin_force_transcode is False
+    bodies = []
+    def remote(request):
+        if "PlaybackInfo" in request.url.path:
+            bodies.append(json.loads(request.content))
+            return httpx.Response(200, json={"PlaySessionId": "session", "MediaSources": [{
+                "Id": "source", "SupportsDirectPlay": True}]})
+        return httpx.Response(200, json=ITEM)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(remote)) as http:
+        jf = Jellyfin(config, http)
+        jf.ready = True
+        source = await jf.resolve(ID, 10, None, -1)
+    assert bodies[0]["EnableDirectPlay"] and bodies[0]["AllowVideoStreamCopy"]
+    assert not source.transcoded and source.method == "DirectPlay"
+    assert parse_qs(urlsplit(source.url).query)["Static"] == ["true"]
+    assert source.seek == source.offset == 10
+
+
+@pytest.mark.parametrize("force,hdr,subtitle", [(True, False, -1), (False, True, -1), (False, False, 2)])
+async def test_required_video_conversion_disables_copy_even_when_direct_play_is_offered(config, force, hdr, subtitle):
+    config.jellyfin_force_transcode = force
+    item = {**ITEM, "MediaStreams": [*ITEM["MediaStreams"], {
+        "Type": "Video", "VideoRange": "HDR" if hdr else "SDR"}]}
+    def remote(request):
+        if "PlaybackInfo" in request.url.path:
+            return httpx.Response(200, json={"PlaySessionId": "session", "MediaSources": [{
+                "Id": "source", "SupportsDirectPlay": True,
+                "TranscodingUrl": "/Videos/test/master.m3u8?AllowVideoStreamCopy=true"}]})
+        return httpx.Response(200, json=item)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(remote)) as http:
+        jf = Jellyfin(config, http)
+        jf.ready = True
+        source = await jf.resolve(ID, 0, None, subtitle)
+    query = parse_qs(urlsplit(source.url).query)
+    assert source.transcoded and query["AllowVideoStreamCopy"] == ["false"]
+    assert query["EnableAutoStreamCopy"] == ["false"]
+
+
+@pytest.mark.parametrize("url", ["/Videos/test/master.m3u8?AllowVideoStreamCopy=false", None])
+async def test_direct_stream_requires_prepared_url_and_allows_copy(config, url):
+    def remote(request):
+        if "PlaybackInfo" in request.url.path:
+            return httpx.Response(200, json={"PlaySessionId": "session", "MediaSources": [{
+                "Id": "source", "SupportsDirectPlay": False, "SupportsDirectStream": True,
+                "TranscodingUrl": url}]})
+        return httpx.Response(200, json=ITEM)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(remote)) as http:
+        jf = Jellyfin(config, http)
+        jf.ready = True
+        if url is None:
+            with pytest.raises(Problem, match="could not provide"):
+                await jf.resolve(ID, 0, None, -1)
+        else:
+            source = await jf.resolve(ID, 10, None, -1)
+            assert source.transcoded and source.seek == 10
+            assert parse_qs(urlsplit(source.url).query)["AllowVideoStreamCopy"] == ["true"]

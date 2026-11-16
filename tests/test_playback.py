@@ -41,7 +41,8 @@ class Media:
         self.process = None
         self.commands = []
 
-    async def connect(self, grant, bitrate):
+    async def connect(self, grant, bitrate, video_encoder="auto"):
+        self.video_encoder = video_encoder
         self.process = object()
 
     async def send(self, command, **payload):
@@ -70,7 +71,9 @@ def player(config, monkeypatch):
 
 
 async def test_first_add_plays_and_other_adds_queue(player):
+    player.config.video_encoder = "nvenc"
     await player.action(USER, Action(action="add", item_id=ID))
+    assert player.worker.video_encoder == "nvenc"
     key = player.current["key"]
     assert player.channel == "voice" and not player.queue
     await player.action(USER, Action(action="add", item_id=ID))
