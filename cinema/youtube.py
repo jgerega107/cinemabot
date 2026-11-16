@@ -120,6 +120,9 @@ class YouTube:
         info = await self.extract(canonical_url("https://www.youtube.com/watch?v=" + item_id), flat=False)
         if info.get("is_live") or info.get("live_status") in {"is_live", "is_upcoming"}:
             raise Problem(400, "Live and upcoming YouTube streams are not supported yet.")
+        duration = info.get("duration") or 0
+        if position < 0 or (duration and position >= duration):
+            raise Problem(400, "Seek position is outside the title.")
         url = info.get("url", "")
         parsed = urlsplit(url)
         if (parsed.scheme != "https" or not (parsed.hostname or "").endswith(".googlevideo.com")
