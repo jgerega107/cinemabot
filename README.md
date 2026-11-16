@@ -24,7 +24,7 @@ Browser ──sign-in / controls──> Python backend
 
 1. On your chosen Fluxer instance, create an application and save its application ID, client secret, and bot token.
 2. Register the exact callback `https://cinema.example.com/auth/callback`, substituting your control UI origin.
-3. Install the bot into the community. Grant **View Channel**, **Connect**, **Speak**, and **Stream** in the intended voice channels.
+3. Install the bot into the community. Grant **View Channel**, **Connect**, and **Stream** in the intended voice channels.
 4. Copy `.env.example` to a private `.env`, then set the instance origin, application credentials, and community ID. Optionally restrict `FLUXER_CHANNEL_IDS` to a comma-separated list.
 5. Forward HTTPS for `PUBLIC_ORIGIN` to the service's HTTP port 8080. Preserve the browser's `Origin` header. Disable proxy buffering for `/api/events` and allow long-lived responses.
 6. Set `TRUSTED_PROXY_CIDRS` to the actual proxy peer addresses seen by the container. Forward or append `X-Forwarded-For` at that proxy. The default trusts no forwarded headers, so users behind a proxy share its IP limit until configured. Do not trust every address or an untrusted network. Keep the container's `--no-proxy-headers` Uvicorn flag; the application validates the proxy chain itself.
@@ -151,3 +151,29 @@ Dependabot checks Python, npm, Docker, and GitHub Actions weekly. Repository sec
 The GitHub Actions workflow tests Python, builds the web UI, runs browser tests, renders deployment manifests, builds the Linux amd64 container, and smoke-tests its health endpoint and native media libraries without network access. Successful pushes to `main` publish to `ghcr.io/<repository-owner>/<repository-name>` with a full `sha-<commit>` tag and `main`; `vX.Y.Z` tags also publish `X.Y.Z`. Existing commit images are reused, and version tags point to those images instead of rebuilding or replacing them. Use the repository name `jellyfin-fluxer-bot` for the planned image name. The workflow uses `GITHUB_TOKEN` with package-write permission.
 
 `/healthz` reports process health; `/readyz` requires both Jellyfin authentication and a synchronized Fluxer Gateway. Playback failures are visible in the player. Application logs omit credentials, source URLs, OAuth codes, and grant data; HTTP access logging is disabled by the container command. The browser receives publisher FPS and A/V drift for diagnostics. Queue persistence, multiple replicas, simultaneous rooms, chat commands, Live TV, and personal watch histories are outside v1.
+
+
+## Instance branding and requesters
+
+The player discovers the instance name, accent color, logo, favicon, and optional
+sign-in backdrop from `app_public.branding`. It uses the same discovery fields
+as the music player. Personal client themes and arbitrary instance CSS are not
+applied. Branding refreshes when the Gateway reconnects; reload the page to see
+updates. Missing or broken artwork falls back to text.
+
+Current and queued titles include the requester's community display name and
+avatar, captured from verified membership when the title is requested. Community
+avatars take precedence over global avatars; missing images show initials.
+
+Set the bot's public profile bio in **User Settings → Applications → your cinema
+application → Bot** to include the control UI URL, for example:
+`Watch together: https://cinema.example.com`. Bot profile edits require the
+application owner's session; the service's bot token cannot update its own bio.
+
+Only View Channel, Connect, and Stream are needed for the screen-share tracks.
+Speak controls microphone audio, which this bot does not publish.
+
+The bot's custom status shows "Watching <title>" only while a title is actively
+playing. Pausing, buffering/loading, stopping, or a playback error clears it.
+Updates are deduplicated, checked every two seconds, and refreshed on reconnect.
+The public player URL belongs in the owner-managed profile bio, not the status.

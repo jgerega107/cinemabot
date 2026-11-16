@@ -4,11 +4,12 @@ import json
 import logging
 import time
 from collections.abc import Callable
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
 import httpx
 import websockets
 
+from cinema.branding import asset_url, branding
 from cinema.config import Settings
 from cinema.errors import Problem
 
@@ -25,7 +26,8 @@ def endpoint(value: str, schemes: set[str]) -> str:
 class Fluxer:
     def __init__(self, config: Settings, http: httpx.AsyncClient):
         self.config, self.http = config, http
-        self.api = self.webapp = self.gateway = ""
+        self.api = self.webapp = self.gateway = self.media = ""
+        self.brand = branding({}, config.fluxer_origin)
         self.user_id = ""
         self.online = self.synced = False
         self.states: dict[str, dict] = {}
@@ -37,6 +39,7 @@ class Fluxer:
         self.socket = None
         self.pending: asyncio.Future | None = None
         self.on_change: Callable[[], None] = lambda: None
+        self.now_playing: Callable[[], str | None] = lambda: None
         self._closing = False
         self._acknowledged = True
 
@@ -47,9 +50,14 @@ class Fluxer:
     async def discover(self) -> None:
         response = await self.http.get(self.config.fluxer_origin + "/.well-known/fluxer")
         response.raise_for_status()
-        endpoints = response.json()["endpoints"]
+        document = response.json()
+        endpoints = document["endpoints"]
+        self.brand = branding(document, self.config.fluxer_origin)
+        self.media = asset_url(endpoints.get("media"), self.config.fluxer_origin) or ""
         schemes = {"https", "http"} if self.config.allow_insecure_local else {"https"}
-        self.api = endpoint(endpoints["api_public"], schemes) + "/v1"
+        self.api = endpoint(endpoints.get("api_public") or endpoints["api"], schemes)
+        if not self.api.endswith("/v1"):
+            self.api += "/v1"
         self.webapp = endpoint(endpoints["webapp"], schemes)
         self.gateway = endpoint(endpoints["gateway"], {"wss", "ws"} if self.config.allow_insecure_local else {"wss"})
         me = await self.request("GET", "/users/@me")
@@ -86,8 +94,16 @@ class Fluxer:
             self.bots.add(user_id)
         else:
             self.humans[user_id] = time.monotonic() + 30
-        return {"id": user_id, "name": member.get("nick") or member.get("user", {}).get("global_name")
-                or member.get("user", {}).get("username") or "Member"}
+        user = member.get("user", {})
+        avatar_hash = member.get("avatar") or user.get("avatar")
+        avatar = None
+        if self.media and isinstance(avatar_hash, str) and avatar_hash:
+            uid = quote(user_id, safe="")
+            path = (f"guilds/{quote(self.config.fluxer_guild_id, safe='')}/users/{uid}/avatars/"
+                    if member.get("avatar") else f"avatars/{uid}/")
+            avatar = self.media.rstrip("/") + "/" + path + quote(avatar_hash, safe="") + ".webp?size=64"
+        return {"id": user_id, "name": member.get("nick") or user.get("global_name")
+                or user.get("username") or "Member", "avatar": avatar}
 
     def control_channel(self, user_id: str, active: str | None = None) -> str | None:
         if not self.ready:
@@ -131,7 +147,7 @@ class Fluxer:
             endpoint(grant["endpoint"], {"wss", "ws"} if self.config.allow_insecure_local else {"wss"})
             return {k: grant[k] for k in ("endpoint", "token", "e2ee_key") if grant.get(k)}
         except TimeoutError:
-            raise Problem(503, "Voice join timed out. Check View Channel, Connect, Speak, and Stream permissions.") from None
+            raise Problem(503, "Voice join timed out. Check View Channel, Connect, and Stream permissions.") from None
         finally:
             self.pending = None
 
@@ -205,10 +221,25 @@ class Fluxer:
             self._acknowledged = False
             await self.send(1, sequence[0])
 
+    async def presence(self) -> None:
+        previous = object()
+        while True:
+            if self.online:
+                title = self.now_playing() if self.ready else None
+                text = ("Watching " + title.strip())[:128] if title and title.strip() else None
+                if text != previous:
+                    try:
+                        await self.send(3, {"status": "online", "afk": False,
+                                            "custom_status": {"text": text} if text else None})
+                        previous = text
+                    except Exception:
+                        log.warning("Could not update now-playing status")
+            await asyncio.sleep(2)
+
     async def run(self) -> None:
         delay = 1
         while not self._closing:
-            heartbeat = None
+            heartbeat = presence = None
             try:
                 await self.discover()
                 p = urlsplit(self.gateway)
@@ -216,6 +247,7 @@ class Fluxer:
                 uri = urlunsplit((p.scheme, p.netloc, p.path, urlencode(query), ""))
                 async with websockets.connect(uri, max_size=8 * 1024 * 1024, open_timeout=15) as socket:
                     self.socket = socket
+                    presence = asyncio.create_task(self.presence())
                     sequence = [None]
                     self._acknowledged = True
                     async for raw in socket:
@@ -243,6 +275,10 @@ class Fluxer:
             except Exception as e:
                 log.warning("Gateway unavailable: %s", e.message if isinstance(e, Problem) else type(e).__name__)
             finally:
+                if presence:
+                    presence.cancel()
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
+                        await presence
                 if heartbeat:
                     heartbeat.cancel()
                     with contextlib.suppress(asyncio.CancelledError, Exception):
@@ -262,4 +298,7 @@ class Fluxer:
         self._closing = True
         await self.leave()
         if self.socket:
+            if self.online:
+                with contextlib.suppress(Exception):
+                    await self.send(3, {"status": "online", "afk": False, "custom_status": None})
             await self.socket.close()
