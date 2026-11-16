@@ -113,3 +113,26 @@ test('instance theme and requester identities survive image failures', async ({ 
   expect(await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--accent').trim())).toBe('#ec4899');
   await expect(page.locator('body')).not.toContainText('Fluxer');
 });
+
+
+
+test('YouTube playlist requests use URL payloads', async ({ page }) => {
+  const actions = await setup(page);
+  await page.goto('/');
+  const input = page.getByLabel('YouTube video or playlist');
+  await expect(input).toBeEnabled();
+  const url = 'https://www.youtube.com/playlist?list=PL1234567890';
+  await input.fill(url);
+  await page.locator('.youtube-request').getByRole('button', { name: 'Add to queue' }).click();
+  await expect.poll(() => actions.length).toBe(1);
+  expect(actions[0]).toMatchObject({ action: 'add', url });
+  expect(actions[0].item_id).toBeUndefined();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+});
+
+test('YouTube requests require voice control permission', async ({ page }) => {
+  await setup(page, { control: false });
+  await page.goto('/');
+  await expect(page.getByLabel('YouTube video or playlist')).toBeDisabled();
+  await expect(page.locator('.youtube-request').getByRole('button', { name: 'Play now' })).toBeDisabled();
+});
