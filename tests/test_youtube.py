@@ -12,6 +12,40 @@ URL = "https://www.youtube.com/watch?v=" + VIDEO
 LIST = "PL1234567890"
 
 
+@pytest.mark.parametrize(("value", "expected"), [(None, "youtube"), ("", ""), (" , ", ""),
+                                                (" YouTube, youtube ", "youtube")])
+def test_link_provider_environment(config, monkeypatch, value, expected):
+    from cinema.config import Settings
+
+    monkeypatch.delenv("ALLOWED_LINK_PROVIDERS", raising=False)
+    if value is not None:
+        monkeypatch.setenv("ALLOWED_LINK_PROVIDERS", value)
+    settings = Settings(_env_file=None, **config.model_dump(exclude={"allowed_link_providers"}))
+    assert settings.allowed_link_providers == expected
+
+
+@pytest.mark.parametrize("value", ["*", "vimeo", "youtube,soundcloud", "youtube.com"])
+def test_unsupported_provider_configuration_fails(config, monkeypatch, value):
+    from pydantic import ValidationError
+
+    from cinema.config import Settings
+
+    monkeypatch.setenv("ALLOWED_LINK_PROVIDERS", value)
+    with pytest.raises(ValidationError, match="currently supports only youtube"):
+        Settings(_env_file=None, **config.model_dump(exclude={"allowed_link_providers"}))
+
+
+async def test_disabled_provider_never_extracts(monkeypatch):
+    youtube = YouTube(enabled=False)
+    extract = AsyncMock()
+    monkeypatch.setattr(youtube, "extract", extract)
+    with pytest.raises(Problem, match="disabled"):
+        await youtube.items(URL)
+    with pytest.raises(Problem, match="disabled"):
+        await youtube.resolve(VIDEO, 0, None, -1)
+    extract.assert_not_awaited()
+
+
 @pytest.mark.parametrize("url", [URL + "&t=12", "https://youtu.be/" + VIDEO,
                                 "https://www.youtube.com/shorts/" + VIDEO,
                                 "https://music.youtube.com/watch?v=" + VIDEO])
