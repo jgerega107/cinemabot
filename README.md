@@ -18,7 +18,7 @@ Browser ──sign-in / controls──> Python backend
 - A separate supervised Python process uses PyAV and LiveKit RTC to decode, pace, and publish media. Credentials are passed over stdin, never command arguments.
 - React/TypeScript provides the responsive control UI. Video and audio play in Fluxer, not in the browser control page.
 - Fluxer endpoints are discovered through `/.well-known/fluxer`; no hosted-instance domain is hardcoded. The bot uses normal bot credentials and never calls the bot-restricted stream preview/region API.
-- Direct media stays on the private Jellyfin connection. Subtitle burn-in and HDR conversion request a Jellyfin transcode. The output target is H.264, at most 1920×1080 and 30 fps, preserving lower source frame rates and aspect ratio, with stereo audio.
+- Media stays on the private Jellyfin connection. By default, Jellyfin prepares an H.264 transcode at up to 1920×1080 and 30 fps, preserving lower source frame rates and aspect ratio. The bot decodes that stream and publishes H.264 video with stereo audio to Fluxer.
 
 ## Configure Fluxer
 
@@ -46,6 +46,10 @@ python3.13 -m venv .venv
 Merge the two generated settings from `.env.jellyfin` into your private `.env`; also set `JELLYFIN_URL`. Base paths such as `http://jellyfin:8096/jellyfin` are supported. Do not commit credential files.
 
 All viewers share this account's catalog, audio track, and burned-in subtitles. Access to the Fluxer voice channel determines who can watch the stream. This is not individual Jellyfin-account authorization, and playback history belongs to the bot account.
+
+`JELLYFIN_FORCE_TRANSCODE` defaults to `true`, including when omitted. Jellyfin performs actual video encoding (stream copying is disabled), capped at 1080p/30 and `VIDEO_BITRATE`. This gives the bot a consistent input format, but adds server work and another lossy encoding step; startup and seeking can take longer. Hardware acceleration must be configured separately in Jellyfin. The bot still decodes and re-encodes for Fluxer, so this is not a guarantee that every source will play smoothly.
+
+Set `JELLYFIN_FORCE_TRANSCODE=false` in the environment or Kubernetes ConfigMap and restart the bot to allow compatible titles to play directly. Subtitles and HDR still require transcoding. If Jellyfin cannot provide a required transcode, playback fails instead of silently falling back to direct decoding. Existing deployments adopting the default must permit video transcoding for the dedicated Jellyfin user.
 
 ## Docker Compose
 

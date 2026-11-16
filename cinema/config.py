@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     jellyfin_url: str
     jellyfin_user_id: str
     jellyfin_access_token: SecretStr
+    jellyfin_force_transcode: bool = True
     video_bitrate: int = Field(default=6_000_000, ge=500_000, le=20_000_000)
     empty_channel_seconds: int = Field(default=60, ge=5, le=600)
     session_seconds: int = Field(default=28800, ge=60, le=86400)
