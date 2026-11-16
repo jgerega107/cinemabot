@@ -180,34 +180,62 @@ jobs:
           cosign-release: v3.1.4
       - name: Sign and verify the checked digest
         if: github.event_name != 'pull_request'
-        env:
-          DIGEST: ${{ steps.image.outputs.digest }}
-          WORKFLOW_IDENTITY: https://github.com/${{ github.workflow_ref }}
-        run: |
-          cosign sign --yes "$IMAGE@$DIGEST"
-          cosign verify "$IMAGE@$DIGEST" \
-            --certificate-identity "$WORKFLOW_IDENTITY" \
-            --certificate-oidc-issuer https://token.actions.githubusercontent.com
-      - name: Sign and verify provenance and SBOM in GHCR
-        if: github.event_name != 'pull_request'
+        timeout-minutes: 4
         env:
           DIGEST: ${{ steps.image.outputs.digest }}
           WORKFLOW_IDENTITY: https://github.com/${{ github.workflow_ref }}
         shell: bash
         run: |
           set -euo pipefail
-          docker buildx imagetools inspect "$IMAGE@$DIGEST" --format '{{json .Provenance.SLSA}}' > "$RUNNER_TEMP/provenance.json"
-          docker buildx imagetools inspect "$IMAGE@$DIGEST" --format '{{json .SBOM.SPDX}}' > "$RUNNER_TEMP/sbom.json"
+          timeout 90s cosign sign --timeout 75s --yes "$IMAGE@$DIGEST" > "$RUNNER_TEMP/image-signing.json"
+          timeout 90s cosign verify --timeout 75s "$IMAGE@$DIGEST" \
+            --certificate-identity "$WORKFLOW_IDENTITY" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com > "$RUNNER_TEMP/image-verification.json"
+          echo "Image signature verified for $IMAGE@$DIGEST"
+      - name: Extract provenance and SBOM predicates
+        if: github.event_name != 'pull_request'
+        timeout-minutes: 4
+        env:
+          DIGEST: ${{ steps.image.outputs.digest }}
+          WORKFLOW_IDENTITY: https://github.com/${{ github.workflow_ref }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 60s docker buildx imagetools inspect "$IMAGE@$DIGEST" --format '{{json .Provenance.SLSA}}' > "$RUNNER_TEMP/provenance.json"
+          timeout 60s docker buildx imagetools inspect "$IMAGE@$DIGEST" --format '{{json .SBOM.SPDX}}' > "$RUNNER_TEMP/sbom.json"
           jq -e '.buildDefinition.buildType and .runDetails.builder' "$RUNNER_TEMP/provenance.json" > /dev/null
           jq -e '.spdxVersion and .SPDXID' "$RUNNER_TEMP/sbom.json" > /dev/null
-          cosign attest --yes --type slsaprovenance1 --predicate "$RUNNER_TEMP/provenance.json" "$IMAGE@$DIGEST"
-          cosign attest --yes --type spdxjson --predicate "$RUNNER_TEMP/sbom.json" "$IMAGE@$DIGEST"
-          for kind in slsaprovenance1 spdxjson; do
-            cosign verify-attestation --type "$kind" "$IMAGE@$DIGEST" \
-              --certificate-identity "$WORKFLOW_IDENTITY" \
-              --certificate-oidc-issuer https://token.actions.githubusercontent.com
-          done
+          echo "BuildKit SLSA v1 and SPDX predicates extracted"
+      - name: Sign and verify provenance attestation
+        if: github.event_name != 'pull_request'
+        timeout-minutes: 4
+        env:
+          DIGEST: ${{ steps.image.outputs.digest }}
+          WORKFLOW_IDENTITY: https://github.com/${{ github.workflow_ref }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 90s cosign attest --timeout 75s --yes --type slsaprovenance1 --predicate "$RUNNER_TEMP/provenance.json" "$IMAGE@$DIGEST" > "$RUNNER_TEMP/provenance-signing.json"
+          timeout 90s cosign verify-attestation --timeout 75s --type slsaprovenance1 "$IMAGE@$DIGEST" \
+            --certificate-identity "$WORKFLOW_IDENTITY" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com > "$RUNNER_TEMP/provenance-verification.json"
+          echo "provenance attestation verified for $IMAGE@$DIGEST"
+      - name: Sign and verify SBOM attestation
+        if: github.event_name != 'pull_request'
+        timeout-minutes: 4
+        env:
+          DIGEST: ${{ steps.image.outputs.digest }}
+          WORKFLOW_IDENTITY: https://github.com/${{ github.workflow_ref }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 90s cosign attest --timeout 75s --yes --type spdxjson --predicate "$RUNNER_TEMP/sbom.json" "$IMAGE@$DIGEST" > "$RUNNER_TEMP/sbom-signing.json"
+          timeout 90s cosign verify-attestation --timeout 75s --type spdxjson "$IMAGE@$DIGEST" \
+            --certificate-identity "$WORKFLOW_IDENTITY" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com > "$RUNNER_TEMP/sbom-verification.json"
+          echo "SBOM attestation verified for $IMAGE@$DIGEST"
       - name: Promote verified image to commit, branch and release tags
+        timeout-minutes: 5
         if: github.event_name != 'pull_request'
         env:
           TAGS: ${{ steps.meta.outputs.tags }}
