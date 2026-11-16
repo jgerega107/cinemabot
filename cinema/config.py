@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     fluxer_origin: str
     fluxer_guild_id: str
     fluxer_channel_ids: str = ""
+    fluxer_requester_ids: str = ""
     fluxer_bot_token: SecretStr
     fluxer_client_id: str
     fluxer_client_secret: SecretStr
@@ -68,3 +69,7 @@ class Settings(BaseSettings):
     @property
     def channel_ids(self) -> set[str]:
         return {x.strip() for x in self.fluxer_channel_ids.split(",") if x.strip()}
+
+    def can_request(self, user_id: str) -> bool:
+        allowed = {x.strip() for x in self.fluxer_requester_ids.split(",") if x.strip()}
+        return not allowed or user_id in allowed

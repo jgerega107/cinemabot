@@ -9,7 +9,7 @@ type Item = { id: string; title: string; type: string; year?: number; overview: 
   artwork?: string; series?: string; season?: number; episode?: number; audio: Track[]; subtitles: Track[] };
 type Row = Item & { key: string; requested_by: string; requester?: User };
 type Player = { current: Row | null; queue: Row[]; state: string; position: number; volume: number;
-  audio: number | null; subtitle: number; channel_name: string | null; can_control: boolean; available: boolean;
+  audio: number | null; subtitle: number; channel_name: string | null; can_request: boolean; can_control: boolean; available: boolean;
   error: string; metrics: { fps?: number; av_drift_ms?: number } };
 type User = { id: string; name: string; avatar?: string | null };
 type Brand = { name: string; color: string; logo?: string | null; icon?: string | null;
@@ -44,7 +44,7 @@ function Requester({ row }: { row: Row }) {
 }
 
 const empty: Player = { current: null, queue: [], state: 'idle', position: 0, volume: 70, audio: null,
-  subtitle: -1, channel_name: null, can_control: false, available: false, error: '', metrics: {} };
+  subtitle: -1, channel_name: null, can_request: false, can_control: false, available: false, error: '', metrics: {} };
 const time = (seconds: number) => {
   const n = Math.max(0, Math.floor(seconds));
   return n >= 3600 ? `${Math.floor(n / 3600)}:${String(Math.floor(n % 3600 / 60)).padStart(2, '0')}:${String(n % 60).padStart(2, '0')}`
@@ -92,7 +92,7 @@ function App() {
   const [seek, setSeek] = useState<number | null>(null);
   const dialogRef = useRef<HTMLDialogElement>(null);
   const parent = crumbs.at(-1);
-  const controls = player.can_control && connected && !busy;
+  const controls = player.can_request && player.can_control && connected && !busy;
 
   useEffect(() => {
     api<{ instance: string; branding?: Brand }>('/api/meta').then(m => {
@@ -149,6 +149,7 @@ function App() {
   useEffect(() => { if (notice) { const t = setTimeout(() => setNotice(''), 3500); return () => clearTimeout(t); } }, [notice]);
 
   async function act(action: string, fields: object = {}) {
+    if (!controls) return;
     setBusy(true); setError('');
     try {
       const result = await api<Player>('/api/action', { action, key: player.current?.key, ...fields });
@@ -222,7 +223,8 @@ function App() {
               <p className="shared-note">Playback and track choices are shared by everyone.</p>
             </> : <div className="empty-player"><div className="empty-screen"><Tv size={43} strokeWidth={1} /><span className="empty-screen-dot" /></div><h3>The screen is yours.</h3><p>Choose a movie or episode.<br />We’ll take care of the popcorn mood.</p></div>}
             {!connected && <p className="connection-note">Connecting to the player…</p>}
-            {connected && !player.can_control && <p className="connection-note">Join {player.channel_name || 'a permitted ' + instance + ' voice channel'} to use the controls.</p>}
+            {connected && !player.can_request && <p className="connection-note">You have read-only access. Ask an administrator for permission to request titles and control playback.</p>}
+            {connected && player.can_request && !player.can_control && <p className="connection-note">Join {player.channel_name || 'a permitted ' + instance + ' voice channel'} to use the controls.</p>}
             {player.error && <p className="player-error" role="status">{player.error}</p>}
             <div className="queue-heading"><h3><ListVideo size={18} />Up next</h3><span>{player.queue.length}</span></div>
             {player.queue.length ? <ol className="queue">{player.queue.map((row, i) => <li key={row.key}><span className="queue-number">{String(i + 1).padStart(2, '0')}</span><div><strong>{row.title}</strong><Requester row={row} /></div><div className="queue-actions"><button className="icon-button" aria-label={`Move ${row.title} up`} disabled={!controls || i === 0} onClick={() => act('move', { key: row.key, index: i - 1 })}><ArrowUp size={14} /></button><button className="icon-button" aria-label={`Move ${row.title} down`} disabled={!controls || i === player.queue.length - 1} onClick={() => act('move', { key: row.key, index: i + 1 })}><ArrowDown size={14} /></button><button className="icon-button" aria-label={`Remove ${row.title}`} disabled={!controls} onClick={() => act('remove', { key: row.key })}><X size={14} /></button></div></li>)}</ol> : <p className="empty-queue">A blank slate for the evening.<br />Add a title to keep the stories coming.</p>}
@@ -233,7 +235,7 @@ function App() {
       <footer><span>Jellyfin library. {instance} company.</span><span>Made for a shared screen <span className="footer-star">✳</span></span></footer>
     </main>
     <dialog ref={dialogRef} onCancel={() => setSelected(null)} onClick={e => { if (e.target === e.currentTarget) setSelected(null); }}>
-      {selected && <div className="detail"><button className="icon-button detail-close" aria-label="Close title details" onClick={() => setSelected(null)}><X size={21} /></button><Poster item={selected} large /><div className="detail-copy"><span className="eyebrow">{selected.series || (selected.type === 'Movie' ? 'FEATURE FILM' : 'EPISODE')}</span><h2>{selected.title}</h2><p className="detail-meta">{selected.year}{selected.duration ? ` · ${Math.round(selected.duration / 60)} min` : ''}</p><p className="overview">{selected.overview || 'No description available for this title.'}</p><div className="detail-buttons"><button className="button primary" disabled={!controls} onClick={() => act('play', { item_id: selected.id })}><Play size={17} fill="currentColor" />{player.current ? 'Play now' : 'Start watching'}</button><button className="button secondary" disabled={!controls} onClick={() => act('add', { item_id: selected.id })}><Plus size={18} />Add to queue</button></div>{!controls && <p className="shared-note">Join the active voice channel to play this title.</p>}</div></div>}
+      {selected && <div className="detail"><button className="icon-button detail-close" aria-label="Close title details" onClick={() => setSelected(null)}><X size={21} /></button><Poster item={selected} large /><div className="detail-copy"><span className="eyebrow">{selected.series || (selected.type === 'Movie' ? 'FEATURE FILM' : 'EPISODE')}</span><h2>{selected.title}</h2><p className="detail-meta">{selected.year}{selected.duration ? ` · ${Math.round(selected.duration / 60)} min` : ''}</p><p className="overview">{selected.overview || 'No description available for this title.'}</p><div className="detail-buttons"><button className="button primary" disabled={!controls} onClick={() => act('play', { item_id: selected.id })}><Play size={17} fill="currentColor" />{player.current ? 'Play now' : 'Start watching'}</button><button className="button secondary" disabled={!controls} onClick={() => act('add', { item_id: selected.id })}><Plus size={18} />Add to queue</button></div>{!controls && <p className="shared-note">{connected && !player.can_request ? 'You have read-only access. Ask an administrator for permission to request titles.' : 'Join the active voice channel to play this title.'}</p>}</div></div>}
     </dialog>
   </div>;
 }

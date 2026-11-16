@@ -96,7 +96,8 @@ Allow outbound access to Jellyfin, the configured Fluxer API/Gateway, and the me
 ## Controls and recovery
 
 - First play joins the requesting user's permitted voice channel. The existing session stays in that channel until stopped.
-- All present community members can play, enqueue, reorder/remove queued items, pause/resume, seek, skip, change shared volume/audio/subtitles, and stop/disconnect.
+- By default, all present community members can play, enqueue, reorder/remove queued items, pause/resume, seek, skip, change shared volume/audio/subtitles, and stop/disconnect.
+- Optionally set `FLUXER_REQUESTER_IDS` to comma-separated Fluxer user IDs (for example, `1234567890123456789,9876543210987654321`) to allow only those users to request titles and change playback or the queue. Other members can still sign in, browse titles, and view the player and queue, but their web UI is read-only. The server rejects their control requests too. Unset, empty, or whitespace-only values allow everyone; surrounding whitespace and empty comma-separated entries are ignored. Existing community membership and voice-channel requirements still apply. Restart the service after changing this setting.
 - Queue capacity is 250 titles. Playback commands carry the current item key so stale controls cannot skip a new title.
 - A pause keeps the publication alive for late viewers. Seek/track changes replace buffered media at the chosen position.
 - After 60 seconds without human participants, the bot disconnects and clears its queue.
