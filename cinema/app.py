@@ -126,8 +126,15 @@ def create_app(config: Settings | None = None, *, start_services: bool = True) -
         image_urls = [fluxer.media, *(fluxer.brand.get(key) for key in
                                       ("logo", "icon", "favicon", "favicon_dark", "backdrop"))]
         image_origins = sorted({f"{urlsplit(url).scheme}://{urlsplit(url).netloc}" for url in image_urls if url})
-        response.headers.update({
-            "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer",
+        # Only successful artwork may be reused by the browser. Keep errors,
+        # catalog data, and authenticated API responses out of browser caches.
+        response.headers["Cache-Control"] = (
+            "private, max-age=3600" if request.url.path.startswith("/api/artwork/")
+            and request.method in {"GET", "HEAD"} and response.status_code == 200 else "no-store"
+        )
+        if request.url.path.startswith("/api/artwork/"):
+            response.headers.add_vary_header("Cookie")
+        response.headers.update({ "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer",
             "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self'; "
             f"img-src 'self' data: {' '.join(image_origins)}; connect-src 'self'; "
             "frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
