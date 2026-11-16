@@ -180,3 +180,28 @@ async def test_empty_channel_timeout_releases_everything(player):
     task.cancel()
     await asyncio.gather(task, return_exceptions=True)
     assert player.state == "idle" and not player.queue and not player.worker.process
+
+
+async def test_requests_capture_verified_profile_and_preserve_it_when_queued(player, monkeypatch):
+    profile = {"id": "u", "name": "Fresh nickname", "avatar": "https://media.test/avatar.webp"}
+    async def member(uid):
+        return profile
+    monkeypatch.setattr(player.fluxer, "member", member)
+    await player.action(USER, Action(action="add", item_id=ID))
+    await player.action(USER, Action(action="add", item_id=ID))
+    assert player.current["requested_by"] == "Fresh nickname"
+    assert player.current["requester"] == profile
+    assert player.queue[0]["requester"] == profile
+    profile["name"] = "Changed later"
+    assert player.current["requester"]["name"] == "Fresh nickname"
+
+
+async def test_presence_only_exposes_actively_playing_title(player):
+    player.current = {"title": "Movie"}
+    for state in ("idle", "loading", "paused", "error"):
+        player.state = state
+        assert player.fluxer.now_playing() is None
+    player.state = "playing"
+    assert player.fluxer.now_playing() == "Movie"
+    player.reconnect = True
+    assert player.fluxer.now_playing() is None
