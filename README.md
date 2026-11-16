@@ -53,17 +53,29 @@ Set `JELLYFIN_FORCE_TRANSCODE=false` in the environment or Kubernetes ConfigMap 
 
 ## Docker Compose
 
-Build locally:
+Run the published image:
 
 ```sh
 cp .env.example .env
 # Fill in .env before starting.
-docker compose up -d --build
+docker compose pull
+docker compose up -d
 ```
 
 The example joins an **existing** Docker network named `jellyfin`. Set `JELLYFIN_NETWORK` to the network your Jellyfin container uses. Jellyfin's network alias should match the host in `JELLYFIN_URL`, normally `http://jellyfin:8096`. Both containers remain on the same host; no media directory needs to be shared with the bot.
 
-The default image is `ghcr.io/jgerega107/jellyfin-fluxer-bot:main`. Prefer a full `sha-COMMIT` tag or digest for a repeatable deployment: set `CINEMA_IMAGE` in `.env`, then use `docker compose pull` and `docker compose up -d --no-build`. This repository and its initial package are private: authenticate your Docker client to `ghcr.io` with credentials authorized to read the package. Forks can set their own owner/image name.
+The default image is `ghcr.io/jgerega107/cinemabot:main`. Prefer a full `sha-COMMIT` tag or digest for a repeatable deployment: set `CINEMA_IMAGE` in `.env`, then run `docker compose pull` and `docker compose up -d`. Authenticate to `ghcr.io` if using a private fork/package.
+
+To build locally instead, run `docker build -t cinema:local .`, set `CINEMA_IMAGE=cinema:local` in `.env`, and run `docker compose up -d --pull never`.
+
+The remaining Compose options support the worker's lifecycle and confinement:
+
+- `read_only` keeps the image filesystem immutable; the bounded `/tmp` tmpfs provides writable scratch space for the worker, not Jellyfin's transcode storage. A writable directory is required even with Jellyfin transcoding. The 512 MiB value is a limit, not a reserved allocation.
+- `init` handles signal forwarding and orphaned processes; the 30-second stop grace period allows application and worker cleanup.
+- `cap_drop` and `no-new-privileges` retain container hardening.
+- The shared Jellyfin network provides private service-name access, and the loopback port is for the host's HTTPS reverse proxy.
+
+CPU and memory limits are optional host-specific tuning. The example leaves them unset; add `cpus` and `mem_limit` after measuring usage. The bot still decodes and encodes the Fluxer stream.
 
 For Jellyfin installed directly on the Docker host, add `extra_hosts: ["host.docker.internal:host-gateway"]` to the service on Linux and use `JELLYFIN_URL=http://host.docker.internal:8096`. Jellyfin must listen on an address reachable from the bridge network; `127.0.0.1` inside this container refers to the bot itself. Docker Desktop already provides the host name. The example publishes the UI only on host loopback for an HTTPS reverse proxy.
 
@@ -71,7 +83,7 @@ Optional Intel device access:
 
 ```sh
 export RENDER_GID=$(stat -c '%g' /dev/dri/renderD128)
-docker compose -f compose.yaml -f deploy/compose.intel.yaml up -d --build
+docker compose -f compose.yaml -f deploy/compose.intel.yaml up -d
 ```
 
 The image includes Intel VAAPI drivers. Device access permits the LiveKit SDK's encoder selection; it is **not proof** that a particular wheel/driver/device is accelerating H.264. Verify with the probe and GPU monitoring. Jellyfin's own QSV configuration only accelerates Jellyfin's transcode stage. Software encoding remains available and requires adequate CPU for 1080p.
@@ -93,7 +105,7 @@ kubectl kustomize deploy/kubernetes
 kubectl apply -k deploy/kubernetes
 ```
 
-For Intel acceleration, use `deploy/kubernetes-intel`. Install the Intel device plugin first, adjust `gpu.intel.com/i915` if your driver advertises another resource, and set the correct render group in `supplementalGroups`. This overlay intentionally schedules only onto a node with a GPU allocation; use the base deployment for software operation.
+The Kubernetes example does not allocate a GPU to the bot. Configure hardware acceleration on Jellyfin for source transcoding; the bot still decodes the prepared stream and encodes video for Fluxer.
 
 Allow outbound access to Jellyfin, the configured Fluxer API/Gateway, and the media endpoints provided in voice grants (including WebRTC/TURN connectivity). The bot does not need a LiveKit administrator API key. Temporary storage is bounded to 512 MiB. CPU/memory defaults are starting points to measure on your host, not a certified 1080p minimum.
 
