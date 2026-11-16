@@ -209,5 +209,11 @@ async def test_presence_only_exposes_actively_playing_title(player):
         assert player.fluxer.now_playing() is None
     player.state = "playing"
     assert player.fluxer.now_playing() == "Movie"
+    player.current = {"type": "Episode", "title": "Pilot", "series": "Example Show"}
+    assert player.fluxer.now_playing() == "Example Show - Pilot"
+    player.current["series"] = None
+    assert player.fluxer.now_playing() == "Pilot"
+    player.current = {"type": "Movie", "title": "Movie", "series": "Collection"}
+    assert player.fluxer.now_playing() == "Movie"
     player.reconnect = True
     assert player.fluxer.now_playing() is None

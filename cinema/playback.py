@@ -48,9 +48,16 @@ class Playback:
         self.tasks: set[asyncio.Task] = set()
         self.closing = False
         self.events: asyncio.Queue = asyncio.Queue(maxsize=128)
-        self.fluxer.now_playing = lambda: (
-            self.current["title"] if self.current and self.state == "playing" and not self.reconnect else None
-        )
+        self.fluxer.now_playing = self.now_playing
+
+    def now_playing(self) -> str | None:
+        if not self.current or self.state != "playing" or self.reconnect:
+            return None
+        title = self.current["title"]
+        series = (self.current.get("series") or "").strip()
+        if self.current.get("type") == "Episode" and series:
+            return f"{series} - {title}"
+        return title
 
     def worker_event(self, message: dict) -> None:
         # Reader must never wait on the action lock: connect() waits on that same reader.
