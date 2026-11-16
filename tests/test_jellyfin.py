@@ -35,7 +35,8 @@ async def test_playback_negotiation_and_private_urls(config, subtitle, transcode
     body = json.loads(requests[-1].content)
     assert body["EnableDirectPlay"] is not transcode
     assert source.transcoded is transcode
-    assert source.seek == (0 if transcode else 10)
+    assert source.seek == 10
+    assert source.worker()["seek"] == source.worker()["offset"] == 10
     assert source.offset == 10
     assert source.url.startswith("http://jellyfin:8096/")
     assert "jellyfin-secret" not in source.url

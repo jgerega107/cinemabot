@@ -140,15 +140,18 @@ async def test_normal_parallel_poster_loading_is_admitted(app, signed_in, monkey
     calls = []
     async def artwork(item):
         calls.append(item)
-        if len(calls) == 8:
+        if len(calls) == 24:
             entered.set()
         await release.wait()
         return b"image", "image/webp"
     app.state.jellyfin.ready = True
     monkeypatch.setattr(app.state.jellyfin, "artwork", artwork)
-    tasks = [asyncio.create_task(signed_in.get(f"/api/artwork/{i:032x}")) for i in range(8)]
+    tasks = [asyncio.create_task(signed_in.get(f"/api/artwork/{i:032x}")) for i in range(40)]
     try:
         await asyncio.wait_for(entered.wait(), 2)
+        assert len(calls) == 24
+        # Catalog artwork must not occupy the player API's read slots.
+        assert (await signed_in.get("/api/player")).status_code == 200
     finally:
         release.set()
         responses = await asyncio.gather(*tasks)
