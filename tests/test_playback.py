@@ -205,3 +205,78 @@ async def test_presence_only_exposes_actively_playing_title(player):
     assert player.fluxer.now_playing() == "Movie"
     player.reconnect = True
     assert player.fluxer.now_playing() is None
+
+
+
+@pytest.fixture
+def youtube(player, monkeypatch):
+    from unittest.mock import AsyncMock
+    rows = [{"id": "BaW_jenozKc", "provider": "youtube", "type": "YouTube", "title": "Video",
+             "duration": 60, "audio": [], "subtitles": [], "overview": ""},
+            {"id": "abcdefghijk", "provider": "youtube", "type": "YouTube", "title": "Next video",
+             "duration": 60, "audio": [], "subtitles": [], "overview": ""}]
+    monkeypatch.setattr(player.youtube, "items", AsyncMock(return_value=rows))
+    async def resolve(item_id, offset, audio, subtitle):
+        return Source(item_id, "", "", "https://r1.googlevideo.com/private", {}, offset, offset,
+                      None, -1, "YouTube", False)
+    monkeypatch.setattr(player.youtube, "resolve", AsyncMock(side_effect=resolve))
+    return player.youtube
+
+
+async def test_youtube_playlist_and_mixed_queue(player, youtube):
+    await player.action(USER, Action(action="add", url="https://youtu.be/BaW_jenozKc"))
+    assert player.current["title"] == "Video" and len(player.queue) == 1
+    assert player.queue[0]["requester"]["name"] == "Alex"
+    await player._report()
+    assert not player.jellyfin.reports
+    await player.action(USER, Action(action="seek", key=player.current["key"], position=30))
+    assert youtube.resolve.await_count == 2 and player.position == 30
+    assert "googlevideo" not in str(player.snapshot("u"))
+    await player.action(USER, Action(action="add", item_id=ID))
+    await player.action(USER, Action(action="skip", key=player.current["key"]))
+    assert player.current["title"] == "Next video"
+    await player.action(USER, Action(action="skip", key=player.current["key"]))
+    assert player.current["type"] == "Movie"
+    assert not player.jellyfin.released
+    await player.action(USER, Action(action="stop"))
+    assert len(player.jellyfin.released) == 1
+
+
+async def test_playlist_capacity_is_atomic(player, youtube):
+    await player.action(USER, Action(action="play", item_id=ID))
+    player.queue = [dict(player.current) for _ in range(249)]
+    before = player.current
+    with pytest.raises(Problem, match="room"):
+        await player.action(USER, Action(action="add", url="https://youtu.be/BaW_jenozKc"))
+    assert len(player.queue) == 249 and player.current is before
+    youtube.resolve.assert_not_awaited()
+
+
+async def test_youtube_authorization_rechecked_after_expansion(player, youtube):
+    rows = youtube.items.return_value
+    async def items(url):
+        player.fluxer.states.clear()
+        return rows
+    youtube.items.side_effect = items
+    with pytest.raises(Problem, match="voice channel"):
+        await player.action(USER, Action(action="play", url="https://youtu.be/BaW_jenozKc"))
+    assert player.current is None and not player.queue
+    youtube.resolve.assert_not_awaited()
+
+
+async def test_failed_queued_video_remains_retryable(player, youtube):
+    await player.action(USER, Action(action="play", item_id=ID))
+    await player.action(USER, Action(action="add", url="https://youtu.be/BaW_jenozKc"))
+    failed_key = player.queue[0]["key"]
+    player.audio, player.subtitle = 2, 3
+    youtube.resolve.side_effect = Problem(502, "Unavailable")
+    await player.action(USER, Action(action="skip", key=player.current["key"]))
+    assert player.state == "error" and player.current["key"] == failed_key
+    assert len(player.queue) == 1 and player.position == 0
+    assert player.audio is None and player.subtitle == -1
+
+
+async def test_ambiguous_request_rejected(player, youtube):
+    with pytest.raises(Problem):
+        await player.action(USER, Action(action="add", item_id=ID, url="https://youtu.be/BaW_jenozKc"))
+    youtube.items.assert_not_awaited()
