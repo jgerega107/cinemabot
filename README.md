@@ -181,6 +181,15 @@ The public player URL belongs in the owner-managed profile bio, not the status.
 
 ## YouTube videos and playlists
 
+`ALLOWED_LINK_PROVIDERS=youtube` is the default external-link allowlist. Set it
+to an empty value to disable all external link requests while keeping Jellyfin
+available. Restart the service after changing it. Values are comma-separated,
+case-insensitive provider names; only `youtube` is implemented currently.
+Unsupported names and wildcards fail startup rather than enabling arbitrary
+yt-dlp sites. YouTube's supported HTTPS hosts (`youtube.com`, `www.youtube.com`,
+`m.youtube.com`, `music.youtube.com`, and `youtu.be`) are still validated exactly;
+redirect links, lookalike domains, credentials, and explicit ports are rejected.
+
 Paste an HTTPS YouTube video, Shorts, youtu.be, or playlist link into the player.
 **Add to queue** appends videos in playlist order, starting the first if idle.
 **Play now** replaces the current title and appends the remaining playlist videos
