@@ -70,6 +70,25 @@ async def test_source_refresh_and_header_filtering(monkeypatch):
     assert extract.await_count == 2
 
 
+@pytest.mark.parametrize("position", [-1, 60, 61])
+async def test_out_of_range_seek_rejected(monkeypatch, position):
+    youtube = YouTube()
+    monkeypatch.setattr(youtube, "extract", AsyncMock(return_value={
+        "duration": 60, "url": "https://r1.googlevideo.com/videoplayback"}))
+    with pytest.raises(Problem, match="Seek position is outside") as error:
+        await youtube.resolve(VIDEO, position, None, -1)
+    assert error.value.status == 400
+
+
+@pytest.mark.parametrize(("duration", "position"), [(60, 0), (60, 59.9), (None, 42), (0, 42)])
+async def test_valid_seek_and_unknown_duration(monkeypatch, duration, position):
+    youtube = YouTube()
+    monkeypatch.setattr(youtube, "extract", AsyncMock(return_value={
+        "duration": duration, "url": "https://r1.googlevideo.com/videoplayback"}))
+    source = await youtube.resolve(VIDEO, position, None, -1)
+    assert source.seek == position and source.offset == position
+
+
 @pytest.mark.parametrize("data", [{"url": "file:///etc/passwd"}, {"url": "https://127.0.0.1/"},
                                  {"url": "https://googlevideo.com.evil.test/"}, {"is_live": True}])
 async def test_bad_sources_and_live_videos(monkeypatch, data):
