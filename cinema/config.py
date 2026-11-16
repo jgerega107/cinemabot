@@ -61,8 +61,20 @@ class Settings(BaseSettings):
 
     def validate_transport(self) -> None:
         if not self.public_origin.startswith("https://"):
-            if not self.allow_insecure_local or urlsplit(self.public_origin).hostname not in {"localhost", "127.0.0.1"}:
-                raise ValueError("PUBLIC_ORIGIN requires HTTPS (localhost development can opt out)")
+            host = urlsplit(self.public_origin).hostname
+            local = host == "localhost"
+            try:
+                address = ipaddress.ip_address(host)
+            except ValueError:
+                pass
+            else:
+                # Explicit LAN ranges: is_private also includes non-LAN special-use addresses.
+                local = address.is_loopback or any(address in ipaddress.ip_network(network) for network in (
+                    "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7",
+                ))
+            if not self.allow_insecure_local or not local:
+                raise ValueError("PUBLIC_ORIGIN requires HTTPS (localhost and private LAN IPs can opt out "
+                                 "with ALLOW_INSECURE_LOCAL=true)")
         if not self.fluxer_origin.startswith("https://") and not self.allow_insecure_local:
             raise ValueError("FLUXER_ORIGIN requires HTTPS")
 
