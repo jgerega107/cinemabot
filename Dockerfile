@@ -7,8 +7,9 @@ RUN npm run build
 
 FROM python:3.15-slim-trixie@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928 AS runtime
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 PIP_NO_CACHE_DIR=1
-RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
-    ca-certificates libva2 libva-drm2 libdrm2 intel-media-va-driver libseccomp2 \
+RUN sed -i 's/^Components: main$/Components: main non-free/' /etc/apt/sources.list.d/debian.sources \
+    && apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
+    ca-certificates libva2 libva-drm2 libdrm2 intel-media-va-driver-non-free libseccomp2 \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd -g 10001 cinema && useradd -u 10001 -g cinema --no-create-home cinema
 WORKDIR /app

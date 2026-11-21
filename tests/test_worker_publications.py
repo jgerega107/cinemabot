@@ -2,6 +2,7 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
+from livekit import rtc
 
 from cinema.worker import Worker
 
@@ -33,6 +34,7 @@ async def publication_worker(monkeypatch):
             self.closed = True
 
     async def publish(track, options):
+        track.options = options
         published.append(track)
 
     async def unpublish(sid):
@@ -70,6 +72,75 @@ async def test_repeated_seek_reuses_publications_and_flushes_clocks(publication_
     assert len(published) == 2 and not unpublished
     assert not any(source.closed for source in sources)
     await worker.cancel()
+
+
+@pytest.mark.parametrize("encoder,backend", [
+    ("auto", rtc.VideoEncoderBackend.ENCODER_BACKEND_AUTO),
+    ("software", rtc.VideoEncoderBackend.ENCODER_BACKEND_SOFTWARE),
+    ("hardware", rtc.VideoEncoderBackend.ENCODER_BACKEND_HARDWARE),
+    ("vaapi", rtc.VideoEncoderBackend.ENCODER_BACKEND_VAAPI),
+    ("nvenc", rtc.VideoEncoderBackend.ENCODER_BACKEND_NVENC),
+])
+async def test_publication_requests_configured_encoder(publication_worker, encoder, backend):
+    worker, published, _, _ = publication_worker
+    worker.video_encoder = encoder
+    await worker.tracks(SimpleNamespace(width=1920, height=1080, fps=24))
+    options = published[0].options
+    assert options.video_encoder == backend
+    assert options.video_codec == rtc.VideoCodec.H264 and options.simulcast is False
+    await worker.cancel()
+
+
+@pytest.mark.parametrize("implementation,efficient", [("NvEncoder", True), ("VAAPI", True), ("OpenH264", False)])
+async def test_stats_report_actual_encoder_including_software_fallback(publication_worker, implementation, efficient):
+    worker, _, _, _ = publication_worker
+    report = rtc.stats.RtcStats()
+    report.outbound_rtp.stream.kind = "video"
+    report.outbound_rtp.outbound.encoder_implementation = implementation
+    report.outbound_rtp.outbound.power_efficient_encoder = efficient
+    async def stats():
+        return [report]
+    worker.video_encoder = "nvenc"
+    worker.video_track = SimpleNamespace(get_stats=stats)
+    await worker.update_encoder_stats()
+    assert worker.encoder_stats == {"encoder_implementation": implementation, "encoder_power_efficient": efficient}
+
+
+async def test_missing_or_failed_stats_do_not_claim_hardware_or_break_playback(publication_worker):
+    worker, _, _, _ = publication_worker
+    async def stats():
+        report = rtc.stats.RtcStats()
+        report.outbound_rtp.stream.kind = "video"
+        return [report]
+    worker.video_track = SimpleNamespace(get_stats=stats)
+    await worker.update_encoder_stats()
+    assert worker.encoder_stats == {}
+    async def failed():
+        raise RuntimeError("stats unavailable")
+    worker.video_track.get_stats = failed
+    worker.encoder_stats = {"encoder_implementation": "stale"}
+    await worker.update_encoder_stats()
+    assert worker.encoder_stats == {}
+
+
+async def test_stop_while_fetching_stats_does_not_kill_metrics_task(publication_worker, monkeypatch):
+    worker, _, _, _ = publication_worker
+    worker.sync = object()
+    events = []
+    monkeypatch.setattr("cinema.worker.emit", lambda *args, **kwargs: events.append(args))
+    async def stop_during_stats():
+        worker.sync = None
+    monkeypatch.setattr(worker, "update_encoder_stats", stop_during_stats)
+    calls = 0
+    async def sleep(_):
+        nonlocal calls
+        calls += 1
+        if calls > 1:
+            raise asyncio.CancelledError
+    monkeypatch.setattr("cinema.worker.asyncio.sleep", sleep)
+    with pytest.raises(asyncio.CancelledError):
+        await worker.metrics()
+    assert not events
 
 
 async def test_format_change_replaces_video_but_keeps_audio(publication_worker):

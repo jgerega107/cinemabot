@@ -1,0 +1,25 @@
+# Requires the Intel GPU device plugin advertising gpu.intel.com/i915.
+# For an xe driver node, replace BOTH resource keys with gpu.intel.com/xe.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cinema
+spec:
+  template:
+    spec:
+      securityContext:
+        # Replace 109 with the render-device GID on eligible GPU nodes:
+        # stat -c '%g' /dev/dri/renderD128
+        supplementalGroups: [109]
+      containers:
+        - name: cinema
+          env:
+            - name: VIDEO_ENCODER
+              value: vaapi
+            - name: LIBVA_DRIVER_NAME
+              value: iHD
+          resources:
+            requests:
+              gpu.intel.com/i915: "1"
+            limits:
+              gpu.intel.com/i915: "1"

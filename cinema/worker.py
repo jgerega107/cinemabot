@@ -41,6 +41,8 @@ class Worker:
         self.disconnected = False
         self.intentional_close = False
         self.bitrate = 6_000_000
+        self.video_encoder = "auto"
+        self.encoder_stats = {}
 
         @self.room.on("disconnected")
         def disconnected(*_):
@@ -57,6 +59,9 @@ class Worker:
     async def connect(self, command):
         grant = command["grant"]
         self.bitrate = command.get("bitrate", self.bitrate)
+        self.video_encoder = command.get("video_encoder", "auto")
+        # Validate before connecting; this is a preference, not proof of GPU use.
+        self.encoder_backend()
         encryption = None
         if grant.get("e2ee_key"):
             encryption = rtc.E2EEOptions(key_provider_options=rtc.KeyProviderOptions(
@@ -110,10 +115,12 @@ class Worker:
             if self.video_source:
                 await self.video_source.aclose()
             self.last_frame = None
+            self.encoder_stats = {}
             self.video_source = rtc.VideoSource(decoder.width, decoder.height)
             self.video_track = rtc.LocalVideoTrack.create_video_track("cinema-video", self.video_source)
             await self.room.local_participant.publish_track(self.video_track, rtc.TrackPublishOptions(
                 source=rtc.TrackSource.SOURCE_SCREENSHARE, simulcast=False, video_codec=rtc.VideoCodec.H264,
+                video_encoder=self.encoder_backend(),
                 video_encoding=rtc.VideoEncoding(max_framerate=decoder.fps, max_bitrate=self.bitrate)))
             self.video_format = video_format
         # All decoded audio is normalized to 48 kHz stereo, even across titles.
@@ -178,14 +185,54 @@ class Worker:
             if decoder:
                 await asyncio.to_thread(decoder.close)
 
+    def encoder_backend(self):
+        return {
+            "auto": rtc.VideoEncoderBackend.ENCODER_BACKEND_AUTO,
+            "software": rtc.VideoEncoderBackend.ENCODER_BACKEND_SOFTWARE,
+            "hardware": rtc.VideoEncoderBackend.ENCODER_BACKEND_HARDWARE,
+            "vaapi": rtc.VideoEncoderBackend.ENCODER_BACKEND_VAAPI,
+            "nvenc": rtc.VideoEncoderBackend.ENCODER_BACKEND_NVENC,
+        }[self.video_encoder]
+
+    async def update_encoder_stats(self):
+        track = self.video_track
+        if track is None:
+            return
+        result = {}
+        try:
+            async with asyncio.timeout(1):
+                reports = await track.get_stats()
+            for report in reports:
+                if not report.HasField("outbound_rtp") or report.outbound_rtp.stream.kind != "video":
+                    continue
+                outbound = report.outbound_rtp.outbound
+                if outbound.HasField("encoder_implementation") and outbound.encoder_implementation:
+                    # Forward only a bounded, printable SDK diagnostic, never the full stats report.
+                    result["encoder_implementation"] = "".join(
+                        c for c in outbound.encoder_implementation[:128] if c.isascii() and c.isprintable())
+                if outbound.HasField("power_efficient_encoder"):
+                    result["encoder_power_efficient"] = outbound.power_efficient_encoder
+        except Exception:
+            pass  # Unsupported/temporarily unavailable stats must not interrupt playback.
+        if track is self.video_track:
+            self.encoder_stats = result
+
     async def metrics(self):
+        next_stats = 0.0
         while True:
             await asyncio.sleep(1)
             if (self.paused or self.buffering) and self.last_frame and self.video_source:
                 # Keep a keyframe-capable publication for viewers who arrive during a pause.
                 self.video_source.capture_frame(self.last_frame)
             if self.sync and not self.buffering:
+                if time.monotonic() >= next_stats:
+                    await self.update_encoder_stats()
+                    next_stats = time.monotonic() + 5
+                # A stop/seek may have cleared the synchronizer while stats were in flight.
+                if self.sync is None or self.buffering:
+                    continue
                 emit("progress", generation=self.generation, position=self.position, paused=self.paused,
+                     encoder_requested=self.video_encoder, **self.encoder_stats,
                      fps=round(self.sync.actual_fps, 2),
                      av_drift_ms=round((self.sync.last_video_time - self.sync.last_audio_time) * 1000, 1))
 

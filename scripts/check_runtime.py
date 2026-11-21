@@ -66,6 +66,11 @@ async def check():
             raise AssertionError("Worker escaped process restrictions")
     from cinema.media import Decoder
     from livekit import rtc
+    # Check the real wheel's encoder API inside the confined process, even on CPU-only CI.
+    for backend in (rtc.VideoEncoderBackend.ENCODER_BACKEND_VAAPI,
+                    rtc.VideoEncoderBackend.ENCODER_BACKEND_NVENC):
+        options = rtc.TrackPublishOptions(video_codec=rtc.VideoCodec.H264, video_encoder=backend)
+        assert options.video_encoder == backend
     decoder = await asyncio.to_thread(Decoder, {"url": sys.argv[1]})
     try:
         frames = await asyncio.to_thread(lambda: list(decoder.frames()))

@@ -4,7 +4,7 @@ A shared Jellyfin movie night in a Fluxer voice channel. Browse your library in 
 
 This is a standalone service, not a Jellyfin plugin. One deployment serves one Fluxer instance, one community, and one active stream. Movies and TV episodes are supported. The queue, sign-in sessions, and playback position reset on restart.
 
-**Status:** implemented and locally tested; live bot screen sharing, receiver synchronization, Intel acceleration, and the 30-minute 1080p acceptance run still require validation on your servers. The included compatibility probe is the first deployment gate. GitHub Actions builds, smoke-tests, and publishes the container.
+**Status:** implemented and locally tested; live bot screen sharing, receiver synchronization, Intel/NVIDIA acceleration, and the 30-minute 1080p acceptance run still require validation on your servers. The included compatibility probe is the first deployment gate. GitHub Actions builds, smoke-tests, and publishes the container.
 
 ## How it works
 
@@ -18,7 +18,7 @@ Browser ──sign-in / controls──> Python backend
 - A separate supervised Python process uses PyAV and LiveKit RTC to decode, pace, and publish media. Credentials are passed over stdin, never command arguments.
 - React/TypeScript provides the responsive control UI. Video and audio play in Fluxer, not in the browser control page.
 - Fluxer endpoints are discovered through `/.well-known/fluxer`; no hosted-instance domain is hardcoded. The bot uses normal bot credentials and never calls the bot-restricted stream preview/region API.
-- Media stays on the private Jellyfin connection. By default, Jellyfin prepares an H.264 transcode at up to 1920×1080 and 30 fps, preserving lower source frame rates and aspect ratio. The bot decodes that stream and publishes H.264 video with stereo audio to Fluxer.
+- Media stays on the private Jellyfin connection. Compatible titles play directly by default. Jellyfin prepares media when subtitles, HDR conversion, or format compatibility require it; compatible video may be copied during remuxing/audio conversion. The bot decodes the result and publishes H.264 video with stereo audio to Fluxer, capped at 1920×1080 and 30 fps while preserving lower frame rates and aspect ratio.
 
 ## Configure Fluxer
 
@@ -47,9 +47,11 @@ Merge the two generated settings from `.env.jellyfin` into your private `.env`; 
 
 All viewers share this account's catalog, audio track, and burned-in subtitles. Access to the Fluxer voice channel determines who can watch the stream. This is not individual Jellyfin-account authorization, and playback history belongs to the bot account.
 
-`JELLYFIN_FORCE_TRANSCODE` defaults to `true`, including when omitted. Jellyfin performs actual video encoding (stream copying is disabled), capped at 1080p/30 and `VIDEO_BITRATE`. This gives the bot a consistent input format, but adds server work and another lossy encoding step; startup and seeking can take longer. Hardware acceleration must be configured separately in Jellyfin. The bot still decodes and re-encodes for Fluxer, so this is not a guarantee that every source will play smoothly.
+`JELLYFIN_FORCE_TRANSCODE` defaults to `false`, including when omitted. Compatible titles use the original file and avoid a Jellyfin video encode. Remuxing/audio conversion can copy compatible H.264 video. Selected subtitles still require burn-in and HDR requires SDR conversion; both disable video stream copying. If Jellyfin cannot provide a required prepared stream, playback fails instead of opening an unsuitable source directly.
 
-Set `JELLYFIN_FORCE_TRANSCODE=false` in the environment or Kubernetes ConfigMap and restart the bot to allow compatible titles to play directly. Subtitles and HDR still require transcoding. If Jellyfin cannot provide a required transcode, playback fails instead of silently falling back to direct decoding. Existing deployments adopting the default must permit video transcoding for the dedicated Jellyfin user.
+Set `JELLYFIN_FORCE_TRANSCODE=true` to always request H.264 up to 1080p/30 at `VIDEO_BITRATE`. This is useful when directly decoding high-resolution HEVC/AV1 overloads the bot. It adds server work and another lossy encode; configure Jellyfin hardware acceleration separately. **Existing `.env` files and ConfigMaps with `true` keep their behavior:** change the setting to `false` and recreate/restart the bot to adopt direct playback.
+
+Direct playback here avoids the **Jellyfin** transcode. The bot still decodes frames with PyAV and encodes them for Fluxer with LiveKit; this is not encoded-packet passthrough. GPU encoding does not accelerate PyAV decoding or scaling.
 
 ## HTTP on a trusted LAN
 
@@ -87,14 +89,36 @@ CPU and memory limits are optional host-specific tuning. The example leaves them
 
 For Jellyfin installed directly on the Docker host, add `extra_hosts: ["host.docker.internal:host-gateway"]` to the service on Linux and use `JELLYFIN_URL=http://host.docker.internal:8096`. Jellyfin must listen on an address reachable from the bridge network; `127.0.0.1` inside this container refers to the bot itself. Docker Desktop already provides the host name. The example publishes the UI only on host loopback for an HTTPS reverse proxy.
 
-Optional Intel device access:
+### GPU encoding
+
+`VIDEO_ENCODER` selects the LiveKit H.264 encoder preference:
+
+| Value | Preference |
+| --- | --- |
+| `auto` (default) | SDK selection, using available hardware with software fallback |
+| `software` | Software reference run |
+| `hardware` | Any available hardware encoder |
+| `vaapi` | Intel VAAPI |
+| `nvenc` | NVIDIA NVENC |
+
+These are SDK preferences, not a strict hardware requirement. Unavailable backends may fall back, and driver/encoder initialization can still fail. Check the actual encoder using the probe below. H.264, a single video publication, and existing pause/seek behavior are retained.
+
+For Intel, use a supported GPU with a working host `i915`/`xe` driver and H.264 encoding support. The image includes Debian's full-feature `intel-media-va-driver-non-free` (iHD) driver. Set the render-device group for the non-root container:
 
 ```sh
 export RENDER_GID=$(stat -c '%g' /dev/dri/renderD128)
 docker compose -f compose.yaml -f deploy/compose.intel.yaml up -d
 ```
 
-The image includes Intel VAAPI drivers. Device access permits the LiveKit SDK's encoder selection; it is **not proof** that a particular wheel/driver/device is accelerating H.264. Verify with the probe and GPU monitoring. Jellyfin's own QSV configuration only accelerates Jellyfin's transcode stage. Software encoding remains available and requires adequate CPU for 1080p.
+For NVIDIA, install a compatible host NVIDIA driver and the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html), configure Docker with `nvidia-ctk runtime configure --runtime=docker`, and restart Docker as directed by the toolkit. The GPU must support NVENC H.264; CUDA availability alone is insufficient. Host-matched CUDA/NVENC libraries are injected by the toolkit, not installed as a second kernel driver in the image.
+
+```sh
+docker compose -f compose.yaml -f deploy/compose.nvidia.yaml up -d
+```
+
+The NVIDIA overlay reserves one GPU and enables `compute,video,utility` driver capabilities. To select a specific GPU, replace `count: 1` with `device_ids: ["YOUR-GPU-UUID"]` (do not use both). Use one vendor overlay at a time. Both retain non-root execution, the read-only filesystem, and worker confinement; neither requires a privileged container.
+
+The probe includes `encoder_requested`, `encoder_implementation`, and `encoder_power_efficient` in progress samples when the SDK reports them. Missing fields mean **unknown**, not successful acceleration. Compare `VIDEO_ENCODER=software` against the vendor overlay on the same clip and monitor the host with `intel_gpu_top` or `nvidia-smi dmon -s u`; confirm video-encode activity as well as reduced bot CPU. Device visibility and requested preference alone are not validation. See [LiveKit hardware encoder support](https://docs.livekit.io/robotics/media/video/encoders/) and [release validation](docs/VALIDATION.md).
 
 The Linux worker requires a kernel with Landlock enabled (5.13 or newer) and a container runtime that permits Landlock/seccomp setup. It fails closed when confinement cannot be installed. The worker receives read access to runtime libraries, its own process information, optional GPU devices, and an explicitly selected local probe file. It can write only its private temporary directory. It cannot inspect backend memory, signal other processes, launch programs, or connect to Unix-domain services. Outbound IP networking is required for Jellyfin and Fluxer; the worker still possesses its scoped voice grant and dedicated Jellyfin media credentials. macOS development does not provide this Linux confinement.
 
@@ -113,7 +137,21 @@ kubectl kustomize deploy/kubernetes
 kubectl apply -k deploy/kubernetes
 ```
 
-The Kubernetes example does not allocate a GPU to the bot. Configure hardware acceleration on Jellyfin for source transcoding; the bot still decodes the prepared stream and encodes video for Fluxer.
+The base example uses no GPU allocation. Choose one optional Kustomize overlay for bot encoding:
+
+```sh
+kubectl kustomize deploy/kubernetes-intel
+kubectl apply -k deploy/kubernetes-intel
+# Or, on an NVIDIA cluster:
+kubectl kustomize deploy/kubernetes-nvidia
+kubectl apply -k deploy/kubernetes-nvidia
+```
+
+Intel requires the [Intel GPU device plugin](https://github.com/intel/intel-device-plugins-for-kubernetes/tree/main/cmd/gpu_plugin) and nodes advertising `gpu.intel.com/i915`. For `xe` nodes, change both resource keys to `gpu.intel.com/xe`. Edit `deploy/kubernetes-intel/gpu.yaml` to replace the sample supplemental group `109` with the render-device GID on eligible nodes; use consistent GIDs or constrain scheduling to matching nodes. The device plugin supplies device access; no hostPath or privileged pod is needed.
+
+NVIDIA requires host drivers, Container Toolkit, and the [NVIDIA device plugin](https://github.com/NVIDIA/k8s-device-plugin) or GPU Operator, advertising `nvidia.com/gpu`. The example uses `runtimeClassName: nvidia`; configure that RuntimeClass or remove the field if NVIDIA is the default runtime. It requests one GPU and enables CUDA/NVENC driver-library injection. Select a GPU with NVENC H.264 support.
+
+Both overlays inherit the base CPU/memory limits and hardening. GPU resources are allocated to the bot separately from Jellyfin. Configure Jellyfin hardware acceleration independently when it needs to transcode. Validate with the probe on the actual GPU node; rendering YAML does not establish working hardware encoding.
 
 Allow outbound access to Jellyfin, the configured Fluxer API/Gateway, and the media endpoints provided in voice grants (including WebRTC/TURN connectivity). The bot does not need a LiveKit administrator API key. Temporary storage is bounded to 512 MiB. CPU/memory defaults are starting points to measure on your host, not a certified 1080p minimum.
 
