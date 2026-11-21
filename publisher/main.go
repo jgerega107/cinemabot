@@ -13,6 +13,7 @@ import (
 	"github.com/livekit/protocol/livekit"
 	lk "github.com/livekit/server-sdk-go/v2"
 	"github.com/livekit/server-sdk-go/v2/e2ee"
+	"github.com/pion/rtcp"
 	"github.com/pion/webrtc/v4"
 	"github.com/pion/webrtc/v4/pkg/media"
 )
@@ -23,6 +24,7 @@ var video, audio *lk.LocalTrack
 var videoSID string
 var width, height int
 var interrupted atomic.Bool
+var requestKeyFrame atomic.Bool
 
 //export CinemaConnect
 func CinemaConnect(endpoint, token, shared *C.char) C.int {
@@ -36,7 +38,7 @@ func CinemaConnect(endpoint, token, shared *C.char) C.int {
 	callback.OnReconnecting = func() { interrupted.Store(true) }
 	callback.OnDisconnected = func() { interrupted.Store(true) }
 	room = lk.NewRoom(callback)
-	if room.JoinWithToken(C.GoString(endpoint), C.GoString(token), lk.WithAutoSubscribe(false)) != nil {
+	if room.JoinWithToken(C.GoString(endpoint), C.GoString(token), lk.WithAutoSubscribe(false), lk.WithConnectTimeout(15*time.Second)) != nil {
 		return -1
 	}
 	return 0
@@ -52,6 +54,14 @@ func publish(isVideo bool, w, h int) (*lk.LocalTrack, string, error) {
 		encryptionCodec = lk.CodecH264
 	}
 	var opts []lk.LocalTrackOptions
+	if isVideo {
+		opts = append(opts, lk.WithRTCPHandler(func(packet rtcp.Packet) {
+			switch packet.(type) {
+			case *rtcp.PictureLossIndication, *rtcp.FullIntraRequest:
+				requestKeyFrame.Store(true)
+			}
+		}))
+	}
 	if key != nil {
 		enc, err := lk.NewFrameEncryptor(key, encryptionCodec)
 		if err != nil {
@@ -136,6 +146,14 @@ func CinemaWrite(isVideo C.int, data unsafe.Pointer, size C.int, duration, times
 	packet := media.Sample{Data: payload, Duration: time.Duration(duration), Timestamp: time.Unix(0, int64(timestamp))}
 	if track.WriteSample(packet, nil) != nil {
 		return -1
+	}
+	return 0
+}
+
+//export CinemaNeedsKeyframe
+func CinemaNeedsKeyframe() C.int {
+	if requestKeyFrame.Swap(false) {
+		return 1
 	}
 	return 0
 }

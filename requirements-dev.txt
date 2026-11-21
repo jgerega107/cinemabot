@@ -3,3 +3,7 @@ pytest==9.2.0
 pytest-asyncio==1.5.0
 ruff==0.17.5
 PyYAML==6.0.3
+aiofiles==25.1.0
+livekit==1.2.1
+protobuf==7.36.2
+types-protobuf==7.35.1.20260906

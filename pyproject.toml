@@ -7,10 +7,10 @@ name = "jellyfin-fluxer-bot"
 version = "0.1.0"
 description = "A shared Jellyfin cinema in Fluxer voice"
 requires-python = ">=3.13,<3.14"
-dependencies = ["fastapi", "uvicorn", "httpx", "websockets", "pydantic-settings", "av", "livekit", "numpy"]
+dependencies = ["fastapi", "uvicorn", "httpx", "websockets", "pydantic-settings", "av", "numpy"]
 
 [project.optional-dependencies]
-test = ["pytest", "pytest-asyncio", "ruff", "pyyaml"]
+test = ["pytest", "pytest-asyncio", "ruff", "pyyaml", "livekit"]
 
 [project.scripts]
 fluxer-cinema-probe = "cinema.probe:main"

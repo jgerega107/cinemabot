@@ -80,6 +80,8 @@ async def test_worker_pause_and_clock_with_real_decode(clip, monkeypatch):
     samples = []
     received = asyncio.Event()
     class Sink:
+        def needs_keyframe(self):
+            return False
         def tracks(self, *args):
             pass
         def write(self, video, payload, duration, timestamp):

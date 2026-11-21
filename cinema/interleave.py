@@ -1,4 +1,5 @@
 """Present decoded audio and video in FFmpeg's interleaved timestamp order."""
+
 import os
 import threading
 from fractions import Fraction
@@ -23,8 +24,15 @@ class Presentation:
 
     def _produce(self):
         try:
-            with self.writer, av.open(self.writer, "w", format="nut", options={
-                    "max_interleave_delta": "1500000", "flush_packets": "1"}) as mux:
+            with (
+                self.writer,
+                av.open(
+                    self.writer,
+                    "w",
+                    format="nut",
+                    options={"max_interleave_delta": "1500000", "flush_packets": "1"},
+                ) as mux,
+            ):
                 video = mux.add_stream("rawvideo", rate=Fraction(self.decoder.fps).limit_denominator(1001000))
                 video.width, video.height, video.pix_fmt = self.decoder.width, self.decoder.height, "yuv420p"
                 video.time_base = Fraction(1, 90000)
@@ -47,7 +55,9 @@ class Presentation:
 
     def frames(self):
         # Both formats and dimensions are signaled in the NUT header.
-        with av.open(self.reader, "r", format="nut", options={"probesize": "32", "analyzeduration": "1"}) as source:
+        with av.open(
+            self.reader, "r", format="nut", options={"probesize": "32", "analyzeduration": "1"}
+        ) as source:
             for packet in source.demux():
                 if packet.pts is None or not packet.size:
                     continue

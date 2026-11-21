@@ -1,4 +1,5 @@
 """FFmpeg encoders and the encoded-sample LiveKit transport."""
+
 import ctypes as ct
 from fractions import Fraction
 from pathlib import Path
@@ -18,8 +19,11 @@ class VideoEncoder:
         api.cinema_encode.argtypes = [ct.c_void_p, ct.c_char_p, ct.c_int, ct.c_int, ct.POINTER(ct.c_void_p)]
         api.cinema_encoder_free.argtypes = [ct.c_void_p]
         api.cinema_encoder_free.restype = None
-        choices = {"software": ("libx264",), "vaapi": ("h264_vaapi", "libx264"),
-                   "nvenc": ("h264_nvenc", "libx264")}
+        choices = {
+            "software": ("libx264",),
+            "vaapi": ("h264_vaapi", "libx264"),
+            "nvenc": ("h264_nvenc", "libx264"),
+        }
         for self.name in choices.get(backend, ("h264_vaapi", "h264_nvenc", "libx264")):
             self.handle = api.cinema_encoder_open(self.name.encode(), width, height, fps, bitrate)
             if self.handle:
@@ -72,8 +76,9 @@ class Publisher:
         lib.CinemaClose.restype = None
 
     def connect(self, grant):
-        if self.lib.CinemaConnect(grant["endpoint"].encode(), grant["token"].encode(),
-                                  grant.get("e2ee_key", "").encode()):
+        if self.lib.CinemaConnect(
+            grant["endpoint"].encode(), grant["token"].encode(), grant.get("e2ee_key", "").encode()
+        ):
             raise RuntimeError("Could not join the voice room")
 
     def tracks(self, width, height):
@@ -83,6 +88,9 @@ class Publisher:
     def write(self, video, payload, duration, timestamp_ns):
         if self.lib.CinemaWrite(video, payload, len(payload), round(duration * 1e9), timestamp_ns):
             raise RuntimeError("Could not publish encoded media")
+
+    def needs_keyframe(self):
+        return bool(self.lib.CinemaNeedsKeyframe())
 
     def interrupted(self):
         return bool(self.lib.CinemaInterrupted())
