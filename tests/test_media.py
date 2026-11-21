@@ -8,6 +8,7 @@ import av
 import numpy as np
 import pytest
 
+from cinema.encoded import OpusEncoder
 from cinema.media import Decoder, dimensions, scale_audio
 from cinema.worker import Worker
 
@@ -36,6 +37,46 @@ def clip(tmp_path_factory):
             for packet in stream.encode(None):
                 container.mux(packet)
     return path
+
+
+def test_audio_clock_preserves_rounded_pts_offsets_gaps_and_tail(tmp_path):
+    # Each 1024-sample audio block spans 21.333 ms on Matroska's 1 ms clock.
+    path = tmp_path / "audio-clock.mkv"
+    clock = Fraction(1, 48000)
+    first = 6000
+    gap = 4800
+    with av.open(str(path), "w") as out:
+        video = out.add_stream("ffv1", rate=24)
+        video.width, video.height, video.pix_fmt = 64, 48, "yuv420p"
+        audio = out.add_stream("pcm_s16le", rate=48000)
+        audio.layout = "stereo"
+        for packet in video.encode(av.VideoFrame(64, 48, "yuv420p")):
+            out.mux(packet)
+        for packet in video.encode(None):
+            out.mux(packet)
+        for i in range(32):
+            pcm = av.AudioFrame(format="s16", layout="stereo", samples=1024)
+            pcm.sample_rate, pcm.time_base = 48000, clock
+            pcm.pts = first + i * 1024 + (gap if i >= 15 else 0)
+            pcm.planes[0].update(bytes(4096))
+            for packet in audio.encode(pcm):
+                out.mux(packet)
+        for packet in audio.encode(None):
+            out.mux(packet)
+    decoder = Decoder({"url": str(path)})
+    try:
+        frames = [f for f in decoder.frames() if f.kind == "audio"]
+    finally:
+        decoder.close()
+    assert sum(f.samples for f in frames) == 32 * 1024
+    assert all(f.samples == 960 for f in frames[:-1])
+    starts = [round(f.time * 48000) for f in frames]
+    assert starts == [first + i * 960 + (gap if i >= 16 else 0) for i in range(len(frames))]
+    opus = OpusEncoder()
+    packets = [p for f in frames for p in opus.encode(f, 70)] + opus.finish()
+    deltas = [b.pts - a.pts for a, b in zip(packets, packets[1:], strict=False)]
+    assert deltas.count(960 + gap) == 1
+    assert set(deltas) == {960, 960 + gap}
 
 
 def test_real_decode_preserves_timeline_and_stereo(clip):

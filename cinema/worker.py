@@ -93,7 +93,8 @@ class Worker:
 
     def audio_packets(self, packets):
         for packet in packets:
-            pts = max(0.0, float(packet.pts * packet.time_base))
+            # Opus includes encoder lookahead in the first packet's timestamp.
+            pts = float(packet.pts * packet.time_base)
             self.send(False, bytes(packet), 0.020, self.origin + pts)
             self.audio_time = pts + 0.020
 
