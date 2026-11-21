@@ -54,10 +54,27 @@ class Decoder:
             self.container.seek(int((self.seek + self.origin) * av.time_base))
 
     def frames(self):
-        resampler = av.AudioResampler(format="s16", layout="stereo", rate=48000)
+        resampler = av.AudioResampler(format="s16", layout="stereo", rate=48000, frame_size=960)
         next_video = 0
         last_video = None
-        audio_fallback = 0.0
+        next_audio_sample = None
+
+        def audio_blocks(decoded):
+            nonlocal next_audio_sample
+            for frame in resampler.resample(decoded):
+                start = next_audio_sample if next_audio_sample is not None else 0
+                if frame.time is not None:
+                    pts = round((frame.time - self.origin - self.seek) * 48000)
+                    # Allow 2 ms of container timestamp rounding (96 samples at 48 kHz).
+                    # Anchor at the first PTS and preserve larger gaps in the source.
+                    if next_audio_sample is None or abs(pts - start) > 96:
+                        start = pts
+                next_audio_sample = start + frame.samples
+                trim = max(0, -start)
+                if trim < frame.samples:
+                    pcm = frame.to_ndarray().reshape(-1, 2)[trim:]
+                    yield Frame("audio", max(0, start) / 48000, pcm.tobytes(), samples=len(pcm))
+
         streams = [self.video] + ([self.audio] if self.audio else [])
         for packet in self.container.demux(streams):
             for decoded in packet.decode():
@@ -88,22 +105,8 @@ class Decoder:
                         next_video += 1
                     last_video = data
                 else:
-                    for frame in resampler.resample(decoded):
-                        t = float(frame.time) - self.origin - self.seek if frame.time is not None else audio_fallback
-                        pcm = frame.to_ndarray().reshape(-1, 2)
-                        if t < 0:
-                            trim = min(len(pcm), round(-t * 48000))
-                            pcm = pcm[trim:]
-                            t += trim / 48000
-                        for start in range(0, len(pcm), 960):
-                            block = pcm[start:start + 960]
-                            if len(block):
-                                yield Frame("audio", max(0, t + start / 48000), block.tobytes(), samples=len(block))
-                        audio_fallback = max(0, t) + len(pcm) / 48000
-        for frame in resampler.resample(None):
-            data = frame.to_ndarray().reshape(-1, 2)
-            yield Frame("audio", audio_fallback, data.tobytes(), samples=len(data))
-            audio_fallback += len(data) / 48000
+                    yield from audio_blocks(decoded)
+        yield from audio_blocks(None)
 
     def close(self):
         self.container.close()
