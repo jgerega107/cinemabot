@@ -65,23 +65,21 @@ async def check():
         else:
             raise AssertionError("Worker escaped process restrictions")
     from cinema.media import Decoder
-    from livekit import rtc
-    # Check the real wheel's encoder API inside the confined process, even on CPU-only CI.
-    for backend in (rtc.VideoEncoderBackend.ENCODER_BACKEND_VAAPI,
-                    rtc.VideoEncoderBackend.ENCODER_BACKEND_NVENC):
-        options = rtc.TrackPublishOptions(video_codec=rtc.VideoCodec.H264, video_encoder=backend)
-        assert options.video_encoder == backend
-    decoder = await asyncio.to_thread(Decoder, {"url": sys.argv[1]})
+    from cinema.encoded import Publisher, VideoEncoder
+    from cinema.interleave import Presentation
+    publisher = Publisher()
+    decoder = Decoder({"url": sys.argv[1]})
+    presentation = Presentation(decoder)
+    encoder = VideoEncoder("software", decoder.width, decoder.height, decoder.fps, 500000)
     try:
-        frames = await asyncio.to_thread(lambda: list(decoder.frames()))
-        assert any(f.kind == "video" for f in frames)
+        frames = [f for f in presentation.frames() if f.kind == "video"]
+        assert len(frames) == 5
+        assert all(encoder.encode(f.data) for f in frames)
     finally:
+        presentation.close()
         decoder.close()
-    audio = rtc.AudioSource(48000, 2)
-    video = rtc.VideoSource(320, 180)
-    await audio.capture_frame(rtc.AudioFrame.create(48000, 2, 960))
-    await audio.aclose()
-    await video.aclose()
+        encoder.close()
+        publisher.close()
     assert socket.getaddrinfo("localhost", 80)
     print("Worker confinement and native media checks passed")
 

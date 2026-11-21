@@ -30,7 +30,7 @@ Record Fluxer version, discovered endpoints (without credentials), Jellyfin vers
 | Empty voice channel | Disconnects and clears after 60 seconds | Pending |
 | Intel VAAPI + NVIDIA NVENC + software reference | Record utilization and achieved quality separately | Pending |
 
-Use a test clip with a visible frame counter and synchronized flashes/clicks. Measure **receiver** offset from a recording or capture with a known timebase; publisher timestamps alone are insufficient. Record received resolution, frame rate, WebRTC dropped frames, network statistics, CPU, memory, and (when enabled) GPU utilization over the run. The publisher probe's `av_drift_ms` is a diagnostic of queued source frames, not a receiver measurement.
+Use a test clip with a visible frame counter and synchronized flashes/clicks. Measure **receiver** offset from a recording or capture with a known timebase; publisher timestamps alone are insufficient. Record received resolution, frame rate, WebRTC dropped frames, network statistics, CPU, memory, and (when enabled) GPU utilization over the run. The publisher probe's `av_drift_ms` is the difference between the most recently submitted video and audio timestamps.
 
 Run `python -m cinema.probe --help` for the sender. Store its sanitized JSON report alongside a human report of the receiver observations. Never include grants, tokens, signed URLs, or raw logs containing credentials.
 
@@ -41,5 +41,5 @@ If the normal bot cannot publish video/audio or advertise a watchable screen-sha
 1. Build and run the Linux amd64 image on a Docker host. Confirm non-root operation, read-only root filesystem, bounded `/tmp`, clean shutdown, `/healthz`, and `/readyz` transitions.
 2. Run the Compose example on the Jellyfin host; verify it uses the private Docker/host connection.
 3. Deploy the Kubernetes example as a separate Deployment; verify private Service access and SSE through the HTTPS ingress.
-4. Test each vendor overlay on a matching GPU host: Intel with the render group/iHD driver, NVIDIA with host drivers and Container Toolkit video/compute libraries. Run with a viewer subscribed. Record `encoder_requested`, `encoder_implementation`, and `encoder_power_efficient` from the probe alongside host GPU encode-engine activity and CPU usage. Missing SDK fields are unknown; a software implementation after a GPU request is fallback, not a pass. Compare the same clip with `VIDEO_ENCODER=software`. Test pause/seek and a late subscriber on each backend. Device presence is insufficient.
+4. Test each vendor overlay on a matching GPU host: Intel with the render group/iHD driver, NVIDIA with host drivers and Container Toolkit video/compute libraries. Run with a viewer subscribed. Record `encoder_requested`, `encoder_implementation`, and `encoder_power_efficient` from the probe alongside host GPU encode-engine activity and CPU usage. A reported `libx264` after a GPU request indicates software fallback. Compare the same clip with `VIDEO_ENCODER=software`. Test pause/seek and a late subscriber on each backend. Device presence is insufficient.
 5. Only then record a verified image digest and the compatibility matrix in the release notes.
