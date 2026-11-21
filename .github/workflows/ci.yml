@@ -27,7 +27,38 @@ jobs:
       - name: Check builder security baseline
         run: node -e 'const v=process.versions.node.split(".").map(Number); if(v[0]!==24 || v[1]<22 || (v[1]===22 && v[2]<1)) process.exit(1)'
       - run: pip install -r requirements-dev.txt
-      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg libavcodec-dev libavutil-dev libswscale-dev
+      - run: cc -O2 -shared -fPIC -o cinema/libcinema_encoder.so native/encoder.c $(pkg-config --cflags --libs libavcodec libavutil libswscale)
+      - name: Build the encoded-track publisher
+        working-directory: publisher
+        run: go build -mod=readonly -buildmode=c-shared -o ../cinema/libcinema_publisher.so .
+      - name: Receive plain and encrypted screen shares on loopback
+        env:
+          PYTHONPATH: .
+        run: |
+          set -euo pipefail
+          work=$(mktemp -d)
+          curl -fsSL https://github.com/livekit/livekit/releases/download/v1.13.11/livekit_1.13.11_linux_amd64.tar.gz -o "$work/livekit.tgz"
+          echo "1e9ee90ca301e1842b2887fc77cb122759756a9c8aeb4334ee91de3325ec43fb  $work/livekit.tgz" | sha256sum -c -
+          tar xzf "$work/livekit.tgz" -C "$work" livekit-server
+          cat > "$work/server.yaml" <<'YAML'
+          port: 17880
+          bind_addresses: ["127.0.0.1"]
+          rtc:
+            node_ip: 127.0.0.1
+            tcp_port: 17881
+            udp_port: 17882
+            enable_loopback_candidate: true
+            ips:
+              includes: ["127.0.0.1/32"]
+          YAML
+          "$work/livekit-server" --dev --config "$work/server.yaml" > "$work/server.log" 2>&1 &
+          server=$!
+          trap 'kill "$server" 2>/dev/null || true' EXIT
+          curl --retry 10 --retry-connrefused --retry-delay 1 -fsS http://127.0.0.1:17880 >/dev/null
+          ffmpeg -loglevel error -f lavfi -i testsrc2=s=320x180:r=24 -f lavfi -i sine=frequency=440:sample_rate=48000 -t 12 -c:v libx264 -c:a aac "$work/clip.mkv"
+          timeout 45 python scripts/check_room.py "$work/clip.mkv"
+          timeout 45 python scripts/check_room.py "$work/clip.mkv" --encrypted
       - run: ruff check cinema tests scripts
       - run: python -m pytest -q
       - run: npm ci && npm run build
@@ -149,20 +180,6 @@ jobs:
             sleep 1
           done
           docker exec cinema-smoke python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=2)"
-          docker exec -i cinema-smoke python - <<'PY'
-          import asyncio
-          import os
-          import av
-          from livekit import rtc
-          async def check():
-              assert os.getuid() == 10001
-              assert av.Codec('h264', 'r').is_decoder
-              audio = rtc.AudioSource(48000, 2)
-              video = rtc.VideoSource(320, 180)
-              await audio.aclose()
-              await video.aclose()
-          asyncio.run(check())
-          PY
           docker exec -i cinema-smoke python - < scripts/check_runtime.py
           printf '{"command":"close"}\n' | docker exec -i cinema-smoke python -m cinema.worker_entry
           docker rm -f cinema-smoke

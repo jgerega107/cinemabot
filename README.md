@@ -51,7 +51,7 @@ All viewers share this account's catalog, audio track, and burned-in subtitles. 
 
 Set `JELLYFIN_FORCE_TRANSCODE=true` to always request H.264 up to 1080p/30 at `VIDEO_BITRATE`. This is useful when directly decoding high-resolution HEVC/AV1 overloads the bot. It adds server work and another lossy encode; configure Jellyfin hardware acceleration separately. **Existing `.env` files and ConfigMaps with `true` keep their behavior:** change the setting to `false` and recreate/restart the bot to adopt direct playback.
 
-Direct playback here avoids the **Jellyfin** transcode. The bot still decodes frames with PyAV and encodes them for Fluxer with LiveKit; this is not encoded-packet passthrough. GPU encoding does not accelerate PyAV decoding or scaling.
+Direct playback here avoids the **Jellyfin** transcode. FFmpeg decodes the source and interleaves video and audio by presentation timestamp before the worker paces them. FFmpeg encodes H.264 and Opus. The LiveKit publisher sends those samples on the bot’s existing screen-share tracks. GPU acceleration applies to H.264 encoding.
 
 ## HTTP on a trusted LAN
 
@@ -91,17 +91,17 @@ For Jellyfin installed directly on the Docker host, add `extra_hosts: ["host.doc
 
 ### GPU encoding
 
-`VIDEO_ENCODER` selects the LiveKit H.264 encoder preference:
+`VIDEO_ENCODER` selects the FFmpeg H.264 encoder preference.
 
 | Value | Preference |
 | --- | --- |
-| `auto` (default) | SDK selection, using available hardware with software fallback |
+| `auto` (default) | Try VAAPI, then NVENC, then libx264 |
 | `software` | Software reference run |
 | `hardware` | Any available hardware encoder |
 | `vaapi` | Intel VAAPI |
 | `nvenc` | NVIDIA NVENC |
 
-These are SDK preferences, not a strict hardware requirement. Unavailable backends may fall back, and driver/encoder initialization can still fail. Check the actual encoder using the probe below. H.264, a single video publication, and existing pause/seek behavior are retained.
+The worker tries libx264 if the requested hardware encoder cannot initialize. The player and probe report the encoder used for that stream.
 
 For Intel, use a supported GPU with a working host `i915`/`xe` driver and H.264 encoding support. The image includes Debian's full-feature `intel-media-va-driver-non-free` (iHD) driver. Set the render-device group for the non-root container:
 
@@ -118,7 +118,7 @@ docker compose -f compose.yaml -f deploy/compose.nvidia.yaml up -d
 
 The NVIDIA overlay reserves one GPU and enables `compute,video,utility` driver capabilities. To select a specific GPU, replace `count: 1` with `device_ids: ["YOUR-GPU-UUID"]` (do not use both). Use one vendor overlay at a time. Both retain non-root execution, the read-only filesystem, and worker confinement; neither requires a privileged container.
 
-The probe includes `encoder_requested`, `encoder_implementation`, and `encoder_power_efficient` in progress samples when the SDK reports them. Missing fields mean **unknown**, not successful acceleration. Compare `VIDEO_ENCODER=software` against the vendor overlay on the same clip and monitor the host with `intel_gpu_top` or `nvidia-smi dmon -s u`; confirm video-encode activity as well as reduced bot CPU. Device visibility and requested preference alone are not validation. See [LiveKit hardware encoder support](https://docs.livekit.io/robotics/media/video/encoders/) and [release validation](docs/VALIDATION.md).
+The probe reports the opened FFmpeg encoder as `h264_vaapi`, `h264_nvenc`, or `libx264`. Compare the same clip in software and hardware mode and check encode-engine activity with `intel_gpu_top` or `nvidia-smi dmon -s u`. See [release validation](docs/VALIDATION.md).
 
 The Linux worker requires a kernel with Landlock enabled (5.13 or newer) and a container runtime that permits Landlock/seccomp setup. It fails closed when confinement cannot be installed. The worker receives read access to runtime libraries, its own process information, optional GPU devices, and an explicitly selected local probe file. It can write only its private temporary directory. It cannot inspect backend memory, signal other processes, launch programs, or connect to Unix-domain services. Outbound IP networking is required for Jellyfin and Fluxer; the worker still possesses its scoped voice grant and dedicated Jellyfin media credentials. macOS development does not provide this Linux confinement.
 
@@ -185,8 +185,12 @@ Open the bot's stream in Fluxer and verify picture **and** sound. The JSON repor
 
 ## Development and tests
 
+The Linux worker build uses Go 1.26.8 or newer, a C compiler, pkg-config, and the development packages for libavcodec, libavutil and libswscale. The container builds both native libraries automatically. For a local checkout, build them before running the tests.
+
 ```sh
 .venv/bin/pip install -r requirements-dev.txt
+(cd publisher && go build -buildmode=c-shared -o ../cinema/libcinema_publisher.so .)
+cc -O2 -shared -fPIC -o cinema/libcinema_encoder.so native/encoder.c $(pkg-config --cflags --libs libavcodec libavutil libswscale)
 .venv/bin/python -m pytest -q
 .venv/bin/ruff check cinema tests
 cd web

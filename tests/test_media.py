@@ -75,45 +75,35 @@ def test_volume_is_stereo_safe_and_does_not_overflow():
     assert np.frombuffer(scale_audio(samples, 50), dtype=np.int16).tolist() == [16383, -16384, 5000, -5000]
 
 
-def test_worker_entrypoint_binds_room_to_running_loop(monkeypatch):
-    from cinema.worker_entry import main
-
-    async def inspect_room(worker):
-        assert worker.room._loop is asyncio.get_running_loop()
-
-    monkeypatch.setattr(Worker, "run", inspect_room)
-    monkeypatch.setattr("cinema.worker_entry.logging.disable", lambda *_: None)
-    monkeypatch.setattr("cinema.worker_entry.confine_worker", lambda *_: None)
-    monkeypatch.setattr("sys.argv", ["cinema.worker_entry"])
-    main()
-
-
 async def test_worker_pause_and_clock_with_real_decode(clip, monkeypatch):
     events = []
+    samples = []
+    received = asyncio.Event()
+    class Sink:
+        def needs_keyframe(self):
+            return False
+        def tracks(self, *args):
+            pass
+        def write(self, video, payload, duration, timestamp):
+            samples.append((video, payload, timestamp))
+            received.set()
+    monkeypatch.setattr("cinema.worker.Publisher", Sink)
     monkeypatch.setattr("cinema.worker.emit", lambda event, **kw: events.append({"event": event, **kw}))
     worker = Worker()
-
-    class Sink:
-        async def push(self, frame, timestamp):
-            pass
-        async def wait_for_playout(self):
-            pass
-        def reset(self):
-            pass
-
-    async def tracks(decoder):
-        worker.sync = Sink()
-    monkeypatch.setattr(worker, "tracks", tracks)
+    worker.backend = "software"
     task = asyncio.create_task(worker.play({"url": str(clip)}, 1))
-    await asyncio.sleep(.3)
+    await asyncio.wait_for(received.wait(), 5)
     worker.pause()
     position = worker.position
-    await asyncio.sleep(.2)
+    await asyncio.sleep(.1)
     assert worker.position == position
     worker.resume()
     await asyncio.wait_for(task, 5)
     assert events[-1]["event"] == "ended"
     assert worker.position == pytest.approx(2, abs=.1)
+    assert sum(video for video, _, _ in samples) == 50
+    assert any(not video for video, _, _ in samples)
+    worker.encoder.close()
 
 
 @pytest.mark.parametrize("codec,rate", [("libx264", 24), ("libx265", 60)])

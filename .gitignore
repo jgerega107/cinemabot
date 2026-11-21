@@ -1,3 +1,5 @@
+*.so
+cinema/libcinema_publisher.h
 .venv/
 .env
 .env.*

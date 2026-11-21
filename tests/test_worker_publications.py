@@ -2,181 +2,99 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
-from livekit import rtc
 
+from cinema.encoded import OpusEncoder, VideoEncoder
+from cinema.interleave import Presentation
+from cinema.media import Frame
 from cinema.worker import Worker
 
 
-@pytest.fixture
-async def publication_worker(monkeypatch):
-    published, unpublished, syncs = [], [], []
+def test_ffmpeg_interleaves_skewed_audio_before_publication():
+    def frames():
+        # A full half second of audio arrives before the first picture in each group.
+        for group in range(4):
+            for i in range(25):
+                yield Frame("audio", group * 0.5 + i * 0.02, bytes(3840), samples=960)
+            for i in range(12):
+                yield Frame("video", group * 0.5 + i / 24, bytes(64 * 48 * 3 // 2), 64, 48)
 
-    class Source:
-        def __init__(self, *args, **kwargs):
-            self.closed = False
-            self.frames = []
+    presentation = Presentation(SimpleNamespace(width=64, height=48, fps=24, frames=frames))
+    try:
+        ordered = list(presentation.frames())
+    finally:
+        presentation.close()
+    timestamps = [frame.time for frame in ordered]
+    assert timestamps == sorted(timestamps)
+    pictures = [f for f in ordered if f.kind == "video"]
+    assert len(pictures) == 48
+    assert max(b.time - a.time for a, b in zip(pictures, pictures[1:], strict=False)) == pytest.approx(
+        1 / 24, abs=0.00002
+    )
+    assert sum(f.samples for f in ordered) == 96000
 
-        async def aclose(self):
-            self.closed = True
 
-        def capture_frame(self, frame):
-            self.frames.append(frame)
+def test_opus_accepts_variable_pcm_blocks_and_flushes():
+    opus = OpusEncoder()
+    sizes = [960, 64, 1920, 128, 960]
+    pts = 0
+    packets = []
+    for n in sizes:
+        packets.extend(opus.encode(Frame("audio", pts / 48000, bytes(n * 4), samples=n), 70))
+        pts += n
+    packets += opus.finish()
+    assert packets and all(bytes(p) for p in packets)
+    assert [p.pts for p in packets] == sorted(p.pts for p in packets)
 
-    class Sync:
-        def __init__(self, **kwargs):
-            self.cleared = self.closed = False
-            syncs.append(self)
 
-        async def clear_queue(self):
-            self.cleared = True
+async def test_reuses_tracks_and_sends_decodable_paused_picture(monkeypatch):
+    class Sink:
+        def __init__(self):
+            self.formats, self.samples = [], []
 
-        async def aclose(self):
-            self.closed = True
+        def tracks(self, w, h):
+            self.formats.append((w, h))
 
-    async def publish(track, options):
-        track.options = options
-        published.append(track)
+        def write(self, video, payload, duration, timestamp):
+            self.samples.append(payload)
 
-    async def unpublish(sid):
-        unpublished.append(sid)
+        def interrupted(self):
+            return False
 
-    def track(name, source):
-        return SimpleNamespace(sid=f"{name}-{len(published)}", source=source)
-
-    monkeypatch.setattr("cinema.worker.rtc.VideoSource", Source)
-    monkeypatch.setattr("cinema.worker.rtc.AudioSource", Source)
-    monkeypatch.setattr("cinema.worker.rtc.AVSynchronizer", Sync)
-    monkeypatch.setattr("cinema.worker.rtc.LocalVideoTrack.create_video_track", track)
-    monkeypatch.setattr("cinema.worker.rtc.LocalAudioTrack.create_audio_track", track)
+    monkeypatch.setattr("cinema.worker.Publisher", Sink)
     worker = Worker()
-    worker.room = SimpleNamespace(local_participant=SimpleNamespace(
-        publish_track=publish, unpublish_track=unpublish))
-    return worker, published, unpublished, syncs
-
-
-async def test_repeated_seek_reuses_publications_and_flushes_clocks(publication_worker):
-    worker, published, unpublished, syncs = publication_worker
-    decoder = SimpleNamespace(width=1920, height=1080, fps=24)
-    await worker.tracks(decoder)
-    sources = worker.video_source, worker.audio_source
-    frame = object()
-    worker.last_frame = frame
-    for _ in range(3):
-        previous = worker.sync
-        await worker.cancel()
-        assert previous.cleared and previous.closed
-        await worker.tracks(decoder)
-        assert worker.sync is not previous
-        assert (worker.video_source, worker.audio_source) == sources
-        assert worker.last_frame is frame
-    assert len(published) == 2 and not unpublished
-    assert not any(source.closed for source in sources)
-    await worker.cancel()
-
-
-@pytest.mark.parametrize("encoder,backend", [
-    ("auto", rtc.VideoEncoderBackend.ENCODER_BACKEND_AUTO),
-    ("software", rtc.VideoEncoderBackend.ENCODER_BACKEND_SOFTWARE),
-    ("hardware", rtc.VideoEncoderBackend.ENCODER_BACKEND_HARDWARE),
-    ("vaapi", rtc.VideoEncoderBackend.ENCODER_BACKEND_VAAPI),
-    ("nvenc", rtc.VideoEncoderBackend.ENCODER_BACKEND_NVENC),
-])
-async def test_publication_requests_configured_encoder(publication_worker, encoder, backend):
-    worker, published, _, _ = publication_worker
-    worker.video_encoder = encoder
-    await worker.tracks(SimpleNamespace(width=1920, height=1080, fps=24))
-    options = published[0].options
-    assert options.video_encoder == backend
-    assert options.video_codec == rtc.VideoCodec.H264 and options.simulcast is False
-    await worker.cancel()
-
-
-@pytest.mark.parametrize("implementation,efficient", [("NvEncoder", True), ("VAAPI", True), ("OpenH264", False)])
-async def test_stats_report_actual_encoder_including_software_fallback(publication_worker, implementation, efficient):
-    worker, _, _, _ = publication_worker
-    report = rtc.stats.RtcStats()
-    report.outbound_rtp.stream.kind = "video"
-    report.outbound_rtp.outbound.encoder_implementation = implementation
-    report.outbound_rtp.outbound.power_efficient_encoder = efficient
-    async def stats():
-        return [report]
-    worker.video_encoder = "nvenc"
-    worker.video_track = SimpleNamespace(get_stats=stats)
-    await worker.update_encoder_stats()
-    assert worker.encoder_stats == {"encoder_implementation": implementation, "encoder_power_efficient": efficient}
-
-
-async def test_missing_or_failed_stats_do_not_claim_hardware_or_break_playback(publication_worker):
-    worker, _, _, _ = publication_worker
-    async def stats():
-        report = rtc.stats.RtcStats()
-        report.outbound_rtp.stream.kind = "video"
-        return [report]
-    worker.video_track = SimpleNamespace(get_stats=stats)
-    await worker.update_encoder_stats()
-    assert worker.encoder_stats == {}
-    async def failed():
-        raise RuntimeError("stats unavailable")
-    worker.video_track.get_stats = failed
-    worker.encoder_stats = {"encoder_implementation": "stale"}
-    await worker.update_encoder_stats()
-    assert worker.encoder_stats == {}
-
-
-async def test_stop_while_fetching_stats_does_not_kill_metrics_task(publication_worker, monkeypatch):
-    worker, _, _, _ = publication_worker
-    worker.sync = object()
-    events = []
-    monkeypatch.setattr("cinema.worker.emit", lambda *args, **kwargs: events.append(args))
-    async def stop_during_stats():
-        worker.sync = None
-    monkeypatch.setattr(worker, "update_encoder_stats", stop_during_stats)
-    calls = 0
-    async def sleep(_):
-        nonlocal calls
-        calls += 1
-        if calls > 1:
-            raise asyncio.CancelledError
-    monkeypatch.setattr("cinema.worker.asyncio.sleep", sleep)
-    with pytest.raises(asyncio.CancelledError):
-        await worker.metrics()
-    assert not events
-
-
-async def test_format_change_replaces_video_but_keeps_audio(publication_worker):
-    worker, published, unpublished, _ = publication_worker
-    await worker.tracks(SimpleNamespace(width=1920, height=1080, fps=24))
-    video, audio = worker.video_source, worker.audio_source
-    video_sid = worker.video_track.sid
-    worker.last_frame = object()
-    await worker.cancel()
-    await worker.tracks(SimpleNamespace(width=1280, height=720, fps=30))
-    assert video.closed and not audio.closed
-    assert worker.audio_source is audio
-    assert unpublished == [video_sid]
-    assert len(published) == 3
-    assert worker.last_frame is None
-    await worker.cancel()
-
-
-async def test_buffering_holds_picture_without_reporting_stale_progress(publication_worker, monkeypatch):
-    worker, _, _, _ = publication_worker
-    await worker.tracks(SimpleNamespace(width=1920, height=1080, fps=24))
-    worker.last_frame = object()
-    worker.buffering = True
-    events = []
-    monkeypatch.setattr("cinema.worker.emit", lambda *args, **kwargs: events.append(args))
+    worker.backend = "software"
+    fmt = SimpleNamespace(width=64, height=48, fps=24)
+    await worker.tracks(fmt)
+    await worker.tracks(fmt)
+    assert worker.publisher.formats == [(64, 48)]
+    worker.last_picture = bytes(64 * 48 * 3 // 2)
+    worker.pause()
     calls = 0
 
-    async def sleep(_):
+    async def tick(_):
         nonlocal calls
         calls += 1
-        if calls > 1:
+        if calls == 3:
             raise asyncio.CancelledError
 
-    monkeypatch.setattr("cinema.worker.asyncio.sleep", sleep)
+    monkeypatch.setattr("cinema.worker.asyncio.sleep", tick)
     with pytest.raises(asyncio.CancelledError):
         await worker.metrics()
-    assert worker.video_source.frames == [worker.last_frame]
-    assert not events
-    await worker.cancel()
+    assert len(worker.publisher.samples) == 2
+    import av
+
+    for payload in worker.publisher.samples:
+        decoder = av.CodecContext.create("h264", "r")
+        assert len(decoder.decode(av.Packet(payload))) == 1
+    await worker.tracks(SimpleNamespace(width=96, height=48, fps=24))
+    assert worker.last_picture is None and worker.publisher.formats[-1] == (96, 48)
+    worker.encoder.close()
+
+
+def test_software_encoder_reports_opened_backend():
+    encoder = VideoEncoder("software", 64, 48, 24, 500000)
+    try:
+        assert encoder.name == "libx264"
+        assert encoder.encode(bytes(64 * 48 * 3 // 2), True)
+    finally:
+        encoder.close()
