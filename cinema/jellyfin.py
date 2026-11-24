@@ -132,7 +132,8 @@ class Jellyfin:
     async def item(self, item_id: str) -> dict:
         return public_item(await self.raw_item(item_id))
 
-    async def browse(self, query: str = "", parent: str | None = None, start: int = 0) -> dict:
+    async def browse(self, query: str = "", parent: str | None = None, start: int = 0,
+                     *, letter: str | None = None) -> dict:
         params = {"IncludeItemTypes": "Movie,Series", "Recursive": "true", "Limit": 40,
                   "StartIndex": start, "Fields": "Overview", "SortBy": "SortName", "SortOrder": "Ascending"}
         if parent:
@@ -143,6 +144,8 @@ class Jellyfin:
                               Recursive="false", SortBy="IndexNumber")
         if query:
             params["SearchTerm"] = query
+        if letter:
+            params["NameStartsWith"] = letter
         result = await self.request("GET", f"/Users/{self.config.jellyfin_user_id}/Items", params=params)
         return {"items": [public_item(i) for i in result.get("Items", []) if i.get("Type") in CATALOG],
                 "total": result.get("TotalRecordCount", 0), "start": start}

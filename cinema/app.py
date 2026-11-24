@@ -197,9 +197,11 @@ def create_app(config: Settings | None = None, *, start_services: bool = True) -
     @app.get("/api/items")
     async def items(request: Request, q: str = Query(default="", max_length=200),
                     parent: str | None = Query(default=None, pattern=r"^[a-fA-F0-9-]{32,36}$"),
-                    start: int = Query(default=0, ge=0, le=100000)):
+                    start: int = Query(default=0, ge=0, le=100000),
+                    letter: str | None = Query(default=None, pattern=r"^[A-Z]$")):
         await auth.require(request, fresh=True)
-        return await cached(metadata, ("browse", q, parent, start), lambda: jellyfin.browse(q, parent, start))
+        return await cached(metadata, ("browse", q, parent, start, letter),
+                            lambda: jellyfin.browse(q, parent, start, letter=letter))
 
     @app.get("/api/items/{item_id}")
     async def item(request: Request, item_id: ItemId):

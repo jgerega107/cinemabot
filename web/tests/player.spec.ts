@@ -83,6 +83,61 @@ test('browse, search, details and play', async ({ page }, testInfo) => {
   expect(actions[0]).toMatchObject({ action: 'play', item_id: items[0].id });
 });
 
+test('disc carousel follows scroll, arrows and keyboard selection', async ({ page }) => {
+  await setup(page);
+  await page.goto('/');
+  const carousel = page.getByRole('region', { name: 'Media carousel' });
+  const discs = carousel.getByRole('button');
+  const previous = page.getByRole('button', { name: 'Previous disc' });
+  const next = page.getByRole('button', { name: 'Next disc' });
+  await expect(previous).toBeDisabled();
+  await next.click();
+  await expect(discs.nth(1)).toHaveAttribute('aria-current', 'true');
+  await carousel.evaluate(el => { el.scrollLeft = el.scrollWidth; });
+  await expect(discs.last()).toHaveAttribute('aria-current', 'true');
+  await expect(next).toBeDisabled();
+  await discs.last().press('Home');
+  await expect(discs.first()).toBeFocused();
+  await expect(previous).toBeDisabled();
+  await discs.first().press('ArrowRight');
+  await expect(discs.nth(1)).toBeFocused();
+  await discs.nth(1).press('Enter');
+  await expect(page.getByRole('dialog').getByRole('heading', { name: titles[1] })).toBeVisible();
+});
+
+test('left alphabet filters the full catalog with search and pagination', async ({ page }) => {
+  await setup(page);
+  const catalog = [...items, ...Array.from({ length: 41 }, (_, index) => ({
+    ...items[0], id: id(100 + index), title: `Zenith ${index + 1}`,
+  }))];
+  await page.route('**/api/items?**', route => {
+    const params = new URL(route.request().url()).searchParams;
+    const start = Number(params.get('start'));
+    const results = catalog.filter(item => item.title.toUpperCase().startsWith(params.get('letter') || '') &&
+      item.title.toLowerCase().includes(params.get('q')?.toLowerCase() || ''));
+    return route.fulfill({ json: { items: results.slice(start, start + 40), total: results.length } });
+  });
+  await page.goto('/');
+  const rail = page.getByRole('navigation', { name: 'Filter titles by letter' });
+  const carousel = page.getByRole('region', { name: 'Media carousel' });
+  await expect(carousel.getByRole('button', { name: /Zenith 41\b/ })).toHaveCount(0);
+  expect((await rail.boundingBox())!.x).toBeLessThan((await carousel.boundingBox())!.x);
+  const z = rail.getByRole('button', { name: 'Z', exact: true });
+  await z.click();
+  await expect(z).toHaveAttribute('aria-pressed', 'true');
+  await expect(carousel.locator('.disc-card > strong').first()).toHaveText('Zenith 1');
+  await page.getByRole('button', { name: 'Next page' }).click();
+  await expect(page.getByText('Page 2 of 2')).toBeVisible();
+  await expect(carousel.getByRole('button')).toHaveCount(1);
+  await expect(carousel.locator('.disc-card > strong')).toHaveText('Zenith 41');
+  await page.getByRole('textbox', { name: 'Search library' }).fill('Lighthouse');
+  await expect(page.getByText('No matching titles')).toBeVisible();
+  await rail.getByRole('button', { name: 'All', exact: true }).click();
+  await expect(carousel.getByRole('button')).toHaveCount(1);
+  await expect(carousel.getByRole('button').first()).toHaveText(/Lighthouse/);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+});
+
 test('viewers outside voice cannot use controls', async ({ page }) => {
   await setup(page, { control: false, playing: true });
   await page.goto('/');
@@ -181,6 +236,7 @@ test('failed season navigation clears stale cards and retries without duplicate 
   });
   await page.goto('/');
   await page.locator('.title-card').filter({ hasText: 'The Office' }).click();
+  await expect(page.getByRole('navigation', { name: 'Filter titles by letter' })).toBeHidden();
   await page.locator('.title-card').filter({ hasText: 'Season 1' }).click();
   await expect(page.getByRole('heading', { name: 'Could not load titles' })).toBeVisible();
   await expect(page.locator('.title-card')).toHaveCount(0);

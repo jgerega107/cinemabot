@@ -72,7 +72,7 @@ async def test_catalog_cache_reauthorizes_and_read_limit_stops_upstreams(app, si
         if removed:
             raise Problem(403, "Membership removed")
         return {"id": uid, "name": "Alex"}
-    async def browse(*args):
+    async def browse(*args, **kwargs):
         fetches.append(args)
         return {"items": [], "total": 0}
     monkeypatch.setattr(app.state.fluxer, "member", member)

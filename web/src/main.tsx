@@ -1,6 +1,6 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useId, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Check, ChevronRight, CirclePlay, Clapperboard,
+import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Check, ChevronLeft, ChevronRight, CirclePlay, Clapperboard,
   Film, ListVideo, LogOut, Pause, Play, Plus, Search, SkipForward, Square, Users, Volume2, X } from 'lucide-react';
 import './style.css';
 
@@ -45,6 +45,8 @@ function Requester({ row }: { row: Row }) {
 
 const empty: Player = { current: null, queue: [], state: 'idle', position: 0, volume: 70, audio: null,
   subtitle: -1, channel_name: null, can_control: false, available: false, error: '', metrics: {} };
+const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
+const pageSize = 40;
 const time = (seconds: number) => {
   const n = Math.max(0, Math.floor(seconds));
   return n >= 3600 ? `${Math.floor(n / 3600)}:${String(Math.floor(n % 3600 / 60)).padStart(2, '0')}:${String(n % 60).padStart(2, '0')}`
@@ -79,6 +81,64 @@ function Poster({ item, large = false }: { item: Item; large?: boolean }) {
   </div>;
 }
 
+function DiscCarousel({ items, open }: { items: Item[]; open: (item: Item) => void }) {
+  const track = useRef<HTMLDivElement>(null);
+  const trackId = useId();
+  const [current, setCurrent] = useState(0);
+
+  function moveTo(index: number) {
+    const viewport = track.current;
+    const disc = viewport?.children.item(index) as HTMLElement | null;
+    if (!viewport || !disc) return;
+    viewport.scrollTo({ left: disc.offsetLeft + (disc.offsetWidth - viewport.clientWidth) / 2 });
+    setCurrent(index);
+  }
+
+  function syncCurrent({ currentTarget: viewport }: React.UIEvent<HTMLDivElement>) {
+    const first = viewport.children.item(0) as HTMLElement;
+    const second = viewport.children.item(1) as HTMLElement | null;
+    if (!second) return;
+    const center = viewport.scrollLeft + viewport.clientWidth / 2;
+    const firstCenter = first.offsetLeft + first.offsetWidth / 2;
+    const index = Math.round((center - firstCenter) / (second.offsetLeft - first.offsetLeft));
+    setCurrent(Math.max(0, Math.min(index, items.length - 1)));
+  }
+
+  function navigate(event: React.KeyboardEvent<HTMLDivElement>) {
+    const offsets: Record<string, number> = { ArrowLeft: current - 1, ArrowRight: current + 1,
+      Home: 0, End: items.length - 1 };
+    if (!Object.hasOwn(offsets, event.key) || event.altKey || event.ctrlKey || event.metaKey) return;
+    event.preventDefault();
+    const index = Math.max(0, Math.min(offsets[event.key], items.length - 1));
+    moveTo(index);
+    if (event.target !== event.currentTarget) {
+      (event.currentTarget.children.item(index) as HTMLElement).focus({ preventScroll: true });
+    }
+  }
+
+  return <div className="disc-carousel">
+    <div className="disc-track" id={trackId} ref={track} role="region" aria-label="Media carousel"
+      onScroll={syncCurrent} onKeyDown={navigate}>
+      {items.map((item, index) => <button className="title-card disc-card" key={item.id} onClick={() => open(item)}
+        onFocus={event => { if (event.currentTarget.matches(':focus-visible')) moveTo(index); }}
+        aria-current={index === current ? 'true' : undefined} title={item.title}>
+        <div className="disc-art" aria-hidden="true"><Poster item={item} /></div>
+        <strong>{item.title}</strong>
+        <span>{item.type === 'Series' ? 'TV series' : item.type === 'Season' ? 'Season' :
+          item.type === 'Episode' ? `Episode ${item.episode ?? ''}` : item.year ?? 'Movie'}
+        {item.duration > 0 ? ` · ${Math.round(item.duration / 60)} min` : ''}</span>
+      </button>)}
+    </div>
+    {items.length > 1 && <div className="disc-controls">
+      <button className="icon-button" aria-label="Previous disc" aria-controls={trackId} disabled={current === 0}
+        onClick={() => moveTo(current - 1)}><ChevronLeft size={20} /></button>
+      <span className="disc-position" aria-live="polite">{current + 1} / {items.length}</span>
+      <button className="icon-button" aria-label="Next disc" aria-controls={trackId} disabled={current === items.length - 1}
+        onClick={() => moveTo(current + 1)}><ChevronRight size={20} /></button>
+    </div>}
+  </div>;
+}
+
 function App() {
   const [user, setUser] = useState<User | null>(null);
   const [initializing, setInitializing] = useState(true);
@@ -90,6 +150,7 @@ function App() {
   const [items, setItems] = useState<Item[]>([]);
   const [crumbs, setCrumbs] = useState<Item[]>([]);
   const [query, setQuery] = useState('');
+  const [letter, setLetter] = useState('');
   const [page, setPage] = useState(0);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
@@ -103,6 +164,7 @@ function App() {
   const [seek, setSeek] = useState<number | null>(null);
   const dialogRef = useRef<HTMLDialogElement>(null);
   const parent = crumbs.at(-1);
+  const showAlphabet = parent?.type !== 'Series' && parent?.type !== 'Season';
   const controls = player.can_control && connected && !busy;
 
   useEffect(() => {
@@ -143,15 +205,16 @@ function App() {
     const abort = new AbortController();
     setLoading(true); setItems([]); setTotal(0); setCatalogError('');
     const timer = setTimeout(() => {
-      const params = new URLSearchParams({ q: query, start: String(page * 40) });
+      const params = new URLSearchParams({ q: query, start: String(page * pageSize) });
       if (parent) params.set('parent', parent.id);
+      if (letter) params.set('letter', letter);
       api<{ items: Item[]; total: number }>(`/api/items?${params}`, undefined, abort.signal)
         .then(data => { if (!abort.signal.aborted) { setItems(data.items); setTotal(data.total); } })
         .catch(e => { if (!abort.signal.aborted) setCatalogError(e.message); })
         .finally(() => { if (!abort.signal.aborted) setLoading(false); });
     }, query ? 250 : 0);
     return () => { clearTimeout(timer); abort.abort(); };
-  }, [user?.id, query, parent?.id, page, catalogRetry]);
+  }, [user?.id, query, parent?.id, page, letter, catalogRetry]);
 
   useEffect(() => {
     if (selected && dialogRef.current && !dialogRef.current.open) dialogRef.current.showModal();
@@ -176,7 +239,7 @@ function App() {
         const existing = c.findIndex(crumb => crumb.id === item.id);
         return existing < 0 ? [...c, item] : c.slice(0, existing + 1);
       });
-      setQuery(''); setPage(0); return;
+      setQuery(''); setLetter(''); setPage(0); return;
     }
     try { setSelected(await api<Item>(`/api/items/${item.id}`)); }
     catch (e) { setError((e as Error).message); }
@@ -209,16 +272,26 @@ function App() {
           <span className="room-badge"><Users size={16} />{player.channel_name || 'Join a voice channel to begin'}</span></div>
         <div className="layout">
           <section className="catalog" aria-label="Jellyfin library">
-            <div className="catalog-toolbar"><div className="tabs"><button className={!parent ? 'active' : ''} onClick={() => { setCrumbs([]); setPage(0); setQuery(''); }}><Film size={15} />All titles</button>
-              {libraries.map(l => <button key={l.id} className={crumbs[0]?.id === l.id ? 'active' : ''} onClick={() => { setCrumbs([l]); setPage(0); setQuery(''); }}>{l.title}</button>)}</div>
+            <div className="catalog-toolbar"><div className="tabs"><button className={!parent ? 'active' : ''} onClick={() => { setCrumbs([]); setPage(0); setQuery(''); setLetter(''); }}><Film size={15} />All titles</button>
+              {libraries.map(l => <button key={l.id} className={crumbs[0]?.id === l.id ? 'active' : ''} onClick={() => { setCrumbs([l]); setPage(0); setQuery(''); setLetter(''); }}>{l.title}</button>)}</div>
               <label className="search"><Search size={17} /><input aria-label="Search library" placeholder="Find a film or show" value={query} onChange={e => { setQuery(e.target.value); setPage(0); }} />{query && <button className="icon-button" aria-label="Clear search" onClick={() => setQuery('')}><X size={14} /></button>}</label>
             </div>
-            {parent && <nav className="breadcrumbs" aria-label="Library navigation"><button onClick={() => { setCrumbs([]); setPage(0); }}>Library</button>{crumbs.map((c, i) => <React.Fragment key={c.id}><ChevronRight size={13} /><button onClick={() => { setCrumbs(crumbs.slice(0, i + 1)); setPage(0); }}>{c.title}</button></React.Fragment>)}</nav>}
+            {parent && <nav className="breadcrumbs" aria-label="Library navigation"><button onClick={() => { setCrumbs([]); setPage(0); setLetter(''); }}>Library</button>{crumbs.map((c, i) => <React.Fragment key={c.id}><ChevronRight size={13} /><button onClick={() => { setCrumbs(crumbs.slice(0, i + 1)); setPage(0); setLetter(''); }}>{c.title}</button></React.Fragment>)}</nav>}
             <div className="section-line"><h2>{query ? `Results for “${query}”` : parent?.title || 'All titles'}</h2><span>{total} titles</span></div>
-            {catalogError ? <div className="empty-catalog" role="alert"><h3>Could not load titles</h3><p>{catalogError}</p><button className="button secondary" onClick={() => setCatalogRetry(n => n + 1)}>Retry loading titles</button></div> : loading ? <div className="poster-grid" aria-label="Loading titles">{Array.from({ length: 8 }, (_, i) => <div className="skeleton" key={i} />)}</div> : items.length ?
-              <div className="poster-grid">{items.map(item => <button className="title-card" key={item.id} onClick={() => open(item)}><Poster item={item} /><strong>{item.title}</strong><span>{item.type === 'Series' ? 'TV series' : item.type === 'Season' ? 'Season' : item.type === 'Episode' ? `Episode ${item.episode ?? ''}` : item.year ?? 'Movie'}{item.duration > 0 ? ` · ${Math.round(item.duration / 60)} min` : ''}</span></button>)}</div> :
-              <div className="empty-catalog"><Search size={30} /><h3>{query ? 'No matching titles' : 'No titles available'}</h3>{query && <p>Try another title or browse a different library.</p>}</div>}
-            {total > 40 && <div className="pagination"><button className="button secondary" disabled={!page} onClick={() => setPage(page - 1)}><ArrowLeft size={16} />Previous</button><span>Page {page + 1} of {Math.ceil(total / 40)}</span><button className="button secondary" disabled={(page + 1) * 40 >= total} onClick={() => setPage(page + 1)}>Next<ArrowRight size={16} /></button></div>}
+            <div className={`catalog-browser${showAlphabet ? ' with-alphabet' : ''}`}>
+              {showAlphabet && <nav className="alphabet" aria-label="Filter titles by letter">
+                <button className="alphabet-all" aria-pressed={!letter} onClick={() => { setLetter(''); setPage(0); }}>All</button>
+                <div className="alphabet-letters">{alphabet.map(initial => <button key={initial} aria-pressed={letter === initial}
+                  onClick={() => { setLetter(initial); setPage(0); }}>{initial}</button>)}</div>
+              </nav>}
+              <div className="catalog-results" aria-busy={loading}>
+                {catalogError ? <div className="empty-catalog" role="alert"><h3>Could not load titles</h3><p>{catalogError}</p><button className="button secondary" onClick={() => setCatalogRetry(n => n + 1)}>Retry loading titles</button></div> : loading ?
+                  <div className="carousel-loading" role="status">Loading titles…</div> : items.length ?
+                  <DiscCarousel items={items} open={open} /> :
+                  <div className="empty-catalog"><Search size={30} /><h3>{letter || query ? 'No matching titles' : 'No titles available'}</h3></div>}
+                {total > pageSize && <div className="pagination"><button className="button secondary" aria-label="Previous page" disabled={!page} onClick={() => setPage(page - 1)}><ArrowLeft size={16} />Previous</button><span>Page {page + 1} of {Math.ceil(total / pageSize)}</span><button className="button secondary" aria-label="Next page" disabled={(page + 1) * pageSize >= total} onClick={() => setPage(page + 1)}>Next<ArrowRight size={16} /></button></div>}
+              </div>
+            </div>
           </section>
           <aside className="watch-panel">
             <div className="panel-heading"><span className="eyebrow">NOW PLAYING</span>{player.state !== 'idle' && <span className={`status ${player.state === 'playing' ? 'live' : ''}`}>{player.state.toUpperCase()}</span>}</div>
