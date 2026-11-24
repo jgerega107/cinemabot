@@ -38,7 +38,15 @@ def test_voice_state_refresh_connection_ids_and_allowed_channels(config):
     assert not fluxer.states and not fluxer.ready
 
 
-async def test_voice_grant_matches_channel_and_preserves_encryption(config, monkeypatch):
+@pytest.mark.parametrize(("voice_url", "websocket_url", "allow_insecure"), [
+    ("wss://voice.test", "wss://voice.test", False),
+    ("https://voice.test:443/livekit?region=default", "wss://voice.test:443/livekit?region=default", False),
+    ("http://localhost:7880/livekit", "ws://localhost:7880/livekit", True),
+])
+async def test_voice_grant_matches_channel_and_preserves_encryption(
+    config, monkeypatch, voice_url, websocket_url, allow_insecure,
+):
+    config.allow_insecure_local = allow_insecure
     fluxer = Fluxer(config, None)
     fluxer.online = fluxer.synced = True
     sent = []
@@ -50,12 +58,27 @@ async def test_voice_grant_matches_channel_and_preserves_encryption(config, monk
     fluxer.dispatch("VOICE_SERVER_UPDATE", {"guild_id": "different", "channel_id": "channel", "token": "wrong"})
     assert not task.done()
     fluxer.dispatch("VOICE_SERVER_UPDATE", {"guild_id": "guild", "channel_id": "channel", "connection_id": "c",
-        "endpoint": "wss://voice.test", "token": "grant", "e2ee_key": "encrypted"})
-    assert (await task)["e2ee_key"] == "encrypted"
+        "endpoint": voice_url, "token": "grant", "e2ee_key": "encrypted"})
+    assert await task == {"endpoint": websocket_url, "token": "grant", "e2ee_key": "encrypted"}
     await fluxer.advertise(True)
     assert sent[-1][1]["self_stream"] is True
     await fluxer.leave()
     assert sent[-1][1]["connection_id"] == "c" and sent[-1][1]["channel_id"] is None
+
+
+async def test_voice_grant_rejects_cleartext_by_default(config, monkeypatch):
+    fluxer = Fluxer(config, None)
+    fluxer.online = fluxer.synced = True
+
+    async def send(op, data):
+        fluxer.dispatch("VOICE_SERVER_UPDATE", {
+            "guild_id": "guild", "channel_id": "channel", "connection_id": "c",
+            "endpoint": "http://voice.test/livekit", "token": "grant",
+        })
+
+    monkeypatch.setattr(fluxer, "send", send)
+    with pytest.raises(Problem, match="invalid service endpoint"):
+        await fluxer.join("channel")
 
 
 async def test_rejects_user_account(config):
