@@ -5,6 +5,7 @@ import time
 from typing import Literal
 from uuid import uuid4
 
+import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
 from cinema.errors import Problem
@@ -12,6 +13,29 @@ from cinema.jellyfin import PLAYABLE, Jellyfin, Source
 from cinema.supervisor import Supervisor
 
 log = logging.getLogger(__name__)
+QUEUE_LIMIT = 250
+UPCOMING_EPISODES = 3
+TRACKS = {"audio": ("audio", None), "subtitle": ("subtitles", -1)}
+
+
+def selected_track(tracks: list[dict], index: int | None) -> dict | None:
+    return next((track for track in tracks if track["index"] == index), None)
+
+
+def matching_track(tracks: list[dict], preferred: dict | None) -> int | None:
+    if preferred is None:
+        return None
+    # Stream indices belong to a file. Match language, named variants and subtitle flags.
+    fields = ("language", "name", "forced", "hearing_impaired")
+    candidates = [track for track in tracks
+                  if all(track.get(field) == preferred.get(field) for field in fields)]
+    title = preferred["title"].casefold()
+    exact = next((track for track in candidates if track["title"].casefold() == title), None)
+    if exact:
+        return exact["index"]
+    if preferred.get("language") and candidates:
+        return candidates[0]["index"]
+    return None
 
 
 class Action(BaseModel):
@@ -33,6 +57,8 @@ class Playback:
         self.lock = asyncio.Lock()
         self.queue: list[dict] = []
         self.current: dict | None = None
+        self.series_tracks: dict[str, dict[str, dict | None]] = {}
+        self.episode_queue_exclusions: set[str] = set()
         self.source: Source | None = None
         self.channel: str | None = None
         self.state = "idle"
@@ -91,18 +117,27 @@ class Playback:
             if action in {"add", "play"}:
                 if not command.item_id:
                     raise Problem(400, "Choose a title.")
-                if len(self.queue) >= 250:
-                    raise Problem(409, "The queue is full.")
                 item = await self.jellyfin.item(command.item_id)
                 if item["type"] not in PLAYABLE:
                     raise Problem(400, "Choose a movie or episode.")
                 self.authorize(user["id"], channel)
-                row = {**item, "key": str(uuid4()), "requested_by": requester["name"],
-                       "requester": {key: requester.get(key) for key in ("id", "name", "avatar")}}
+                queued = None
+                if item["type"] == "Episode":
+                    queued = next((row for row in self.queue if row["id"] == item["id"]), None)
+                if len(self.queue) >= QUEUE_LIMIT and queued is None:
+                    raise Problem(409, "The queue is full.")
+                tracks = command.model_dump(include=set(TRACKS), exclude_unset=True)
+                row = {**item, "key": queued["key"] if queued else str(uuid4()), "requested_by": requester["name"],
+                       "requester": {key: requester.get(key) for key in ("id", "name", "avatar")},
+                       "track_selection": tracks}
                 if action == "play" or not self.current:
-                    await self._load(row, channel, user_id=user["id"])
+                    await self._start(row, channel, user_id=user["id"])
                 else:
-                    self.queue.append(row)
+                    self._track_preferences(item, tracks)
+                    if queued:
+                        self.queue[self.queue.index(queued)] = row
+                    else:
+                        self.queue.append(row)
             elif action == "stop":
                 await self._stop(clear=True)
             elif action in {"remove", "move"}:
@@ -114,6 +149,8 @@ class Playback:
                 self.queue.remove(row)
                 if action == "move":
                     self.queue.insert(min(command.index, len(self.queue)), row)
+                elif row["type"] == "Episode":
+                    self.episode_queue_exclusions.add(row["id"])
             elif action == "volume":
                 if command.value is None:
                     raise Problem(400, "Choose a volume.")
@@ -145,11 +182,63 @@ class Playback:
                     position = command.position if action == "seek" else self.position
                     if position is None:
                         raise Problem(400, "Choose a seek position.")
-                    audio = command.audio if action == "tracks" else self.audio
-                    subtitle = command.subtitle if action == "tracks" else self.subtitle
-                    await self._load(self.current, channel, position, audio, subtitle,
-                                     paused=self.state == "paused", user_id=user["id"],
-                                     force_connect=self.reconnect)
+                    changes = command.model_dump(include=set(TRACKS), exclude_unset=True) if action == "tracks" else {}
+                    preferences = self._track_preferences(self.current, changes)
+                    await self._load(self.current, channel, position,
+                                     changes.get("audio", self.audio), changes.get("subtitle", self.subtitle),
+                                     paused=self.state == "paused", user_id=user["id"], force_connect=self.reconnect)
+                    self._remember_tracks(self.current, preferences)
+
+    def preferred_tracks(self, item: dict) -> dict[str, int | None]:
+        saved = self.series_tracks.get(item.get("series_id"), {})
+        choices = {}
+        for kind, (field, default) in TRACKS.items():
+            index = matching_track(item[field], saved.get(kind))
+            choices[kind] = default if index is None else index
+        return choices
+
+    def _track_preferences(self, item: dict, choices: dict) -> dict[str, dict | None]:
+        preferences = {}
+        for kind, index in choices.items():
+            field, default = TRACKS[kind]
+            track = selected_track(item[field], index)
+            if index != default and track is None:
+                raise Problem(400, f"Selected {kind} track is unavailable.")
+            preferences[kind] = track
+        return preferences
+
+    def _remember_tracks(self, item: dict, preferences: dict) -> None:
+        if item.get("series_id") and preferences:
+            self.series_tracks.setdefault(item["series_id"], {}).update(preferences)
+
+    async def _start(self, row: dict, channel: str, user_id: str | None = None) -> None:
+        choices = row.get("track_selection", {})
+        preferences = self._track_preferences(row, choices)
+        tracks = self.preferred_tracks(row) | choices
+        await self._load(row, channel, audio=tracks["audio"], subtitle=tracks["subtitle"], user_id=user_id)
+        self._remember_tracks(row, preferences)
+        if row["type"] == "Episode":
+            self.episode_queue_exclusions.add(row["id"])
+            self.queue[:] = [queued for queued in self.queue if queued["id"] != row["id"]]
+            await self._queue_following_episodes(row)
+
+    async def _queue_following_episodes(self, row: dict) -> None:
+        if not row.get("series_id") or len(self.queue) >= QUEUE_LIMIT:
+            return
+        try:
+            upcoming = await self.jellyfin.following_episodes(row, UPCOMING_EPISODES)
+        except (Problem, httpx.HTTPError, ValueError):
+            log.warning("Could not look up upcoming Jellyfin episodes")
+            return
+        excluded = self.episode_queue_exclusions | {queued["id"] for queued in self.queue}
+        for episode in upcoming:
+            if len(self.queue) >= QUEUE_LIMIT:
+                break
+            if episode["id"] in excluded:
+                continue
+            self.queue.append({**episode, "key": str(uuid4()), "requested_by": row["requested_by"],
+                               "requester": row["requester"]})
+            excluded.add(episode["id"])
 
     async def _load(self, item: dict, channel: str, position: float = 0, audio: int | None = None,
                     subtitle: int = -1, paused: bool = False, user_id: str | None = None,
@@ -207,7 +296,7 @@ class Playback:
         if self.queue:
             row = self.queue.pop(0)
             try:
-                await self._load(row, self.channel)
+                await self._start(row, self.channel)
             except Exception:
                 await self._fail("The next title could not be played.")
         else:
@@ -225,6 +314,7 @@ class Playback:
         self.metrics = {}
         self.empty_since = None
         self.reconnect = False
+        self.episode_queue_exclusions.clear()
         if clear:
             self.queue.clear()
             self.error = ""

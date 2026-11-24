@@ -18,11 +18,20 @@ class Library:
     def __init__(self):
         self.released = []
         self.reports = []
+        self.episodes = []
         self.on_resolve = lambda: None
 
     async def item(self, item_id):
+        episode = next((episode for episode in self.episodes if episode["id"] == item_id), None)
+        if episode:
+            return episode
         return {"id": item_id, "title": "Movie", "type": "Movie", "duration": 120,
-                "audio": [], "subtitles": [], "overview": ""}
+                "audio": [{"index": 1, "title": "English"}],
+                "subtitles": [{"index": 2, "title": "English"}], "overview": ""}
+
+    async def following_episodes(self, item, limit):
+        start = self.episodes.index(next(episode for episode in self.episodes if episode["id"] == item["id"])) + 1
+        return self.episodes[start:start + limit]
 
     async def resolve(self, item_id, offset, audio, subtitle):
         self.on_resolve()
@@ -34,6 +43,15 @@ class Library:
 
     async def report(self, source, event, position, paused=False):
         self.reports.append((event, position, paused))
+
+
+def episode(number, audio, subtitles):
+    return {"id": f"{number:032x}", "title": f"Episode {number}", "type": "Episode", "duration": 120,
+            "series_id": "a" * 32, "series": "Example Show", "audio": audio, "subtitles": subtitles}
+
+
+def track(index, language, title=None, *, forced=False):
+    return {"index": index, "language": language, "title": title or language, "forced": forced}
 
 
 class Media:
@@ -79,6 +97,86 @@ async def test_first_add_plays_and_other_adds_queue(player):
     await player.action(USER, Action(action="add", item_id=ID))
     assert player.current["key"] == key and len(player.queue) == 1
     assert "http://jellyfin" not in str(player.snapshot("u"))
+
+
+async def test_queue_validates_and_uses_selected_tracks_on_playback(player):
+    await player.action(USER, Action(action="add", item_id=ID))
+    with pytest.raises(Problem, match="Selected subtitle track"):
+        await player.action(USER, Action(action="add", item_id=ID, audio=1, subtitle=50))
+    assert not player.queue
+    await player.action(USER, Action(action="add", item_id=ID, audio=1, subtitle=2))
+    assert player.queue[0]["track_selection"] == {"audio": 1, "subtitle": 2}
+    await player.action(USER, Action(action="skip", key=player.current["key"]))
+    assert (player.audio, player.subtitle) == (1, 2)
+
+
+async def test_episodes_continue_with_matching_tracks_and_recover_after_missing_tracks(player):
+    episode_one = episode(1, [track(1, "jpn")], [track(2, "eng")])
+    episode_two = episode(2, [track(1, "eng"), track(4, "jpn")],
+                          [track(2, "eng", forced=True), track(5, "eng")])
+    episode_three = episode(3, [track(1, "eng")], [track(2, "eng", forced=True)])
+    episode_four = episode(4, [track(3, "jpn")], [track(7, "eng")])
+    episode_five = episode(5, [], [])
+    player.jellyfin.episodes = [episode_one, episode_two, episode_three, episode_four, episode_five]
+    await player.action(USER, Action(action="add", item_id=episode_one["id"], audio=1, subtitle=2))
+    assert [row["id"] for row in player.queue] == [episode_two["id"], episode_three["id"], episode_four["id"]]
+    assert player.preferred_tracks(episode_two) == {"audio": 4, "subtitle": 5}
+
+    # Normal completion advances the queue and replenishes its lookahead.
+    task = asyncio.create_task(player.handle_events())
+    try:
+        player.worker_event({"event": "ended", "generation": player.generation})
+        await asyncio.sleep(0)
+        assert player.current["id"] == episode_two["id"]
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    assert (player.audio, player.subtitle) == (4, 5)
+    assert [row["id"] for row in player.queue] == [episode_three["id"], episode_four["id"], episode_five["id"]]
+    await player.action(USER, Action(action="skip", key=player.current["key"]))
+    assert (player.audio, player.subtitle) == (None, -1)
+    await player.action(USER, Action(action="skip", key=player.current["key"]))
+    assert (player.audio, player.subtitle) == (3, 7)
+
+
+async def test_removed_episodes_stay_removed_and_manual_queue_choices_take_precedence(player):
+    first = episode(1, [track(1, "jpn")], [track(2, "eng")])
+    second = episode(2, [track(1, "eng"), track(3, "jpn")], [track(4, "eng")])
+    third = episode(3, [], [])
+    fourth = episode(4, [track(5, "jpn")], [track(6, "eng")])
+    player.jellyfin.episodes = [first, second, third, fourth]
+    await player.action(USER, Action(action="add", item_id=ID))
+    await player.action(USER, Action(action="add", item_id=first["id"], audio=1, subtitle=2))
+    assert [row["id"] for row in player.queue] == [first["id"]]
+
+    await player.action(USER, Action(action="skip", key=player.current["key"]))
+    original_key = player.queue[0]["key"]
+    await player.action(USER, Action(action="add", item_id=second["id"], audio=1))
+    assert player.queue[0]["key"] == original_key
+    await player.action(USER, Action(action="remove", key=player.queue[1]["key"]))
+    await player.action(USER, Action(action="skip", key=player.current["key"]))
+    assert (player.audio, player.subtitle) == (1, 4)
+    assert [row["id"] for row in player.queue] == [fourth["id"]]
+
+    await player.action(USER, Action(action="tracks", key=player.current["key"], audio=3))
+    assert player.subtitle == 4
+    await player.action(USER, Action(action="tracks", key=player.current["key"], subtitle=-1))
+    assert player.audio == 3
+    await player.action(USER, Action(action="skip", key=player.current["key"]))
+    assert (player.audio, player.subtitle) == (5, -1)
+
+
+async def test_episode_lookup_failure_does_not_interrupt_playback(player, monkeypatch):
+    first = episode(1, [], [])
+    player.jellyfin.episodes = [first]
+
+    async def unavailable(*_):
+        raise Problem(503, "Series unavailable.")
+
+    monkeypatch.setattr(player.jellyfin, "following_episodes", unavailable)
+    await player.action(USER, Action(action="play", item_id=first["id"]))
+    assert player.current["id"] == first["id"]
+    assert player.worker.process and not player.queue
 
 
 async def test_leaving_voice_during_resolution_cannot_start_stream(player):

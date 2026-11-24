@@ -50,6 +50,30 @@ async def test_playback_negotiation_and_private_urls(config, force, subtitle, tr
     assert source.worker()["audio_index"] == (None if transcode else 1)
 
 
+async def test_following_episodes_use_jellyfin_series_order_and_request_track_metadata(config):
+    series_id = "c" * 32
+    after = [{**ITEM, "Id": f"{number:032x}", "Type": "Episode", "SeriesId": series_id,
+              "ParentIndexNumber": season, "IndexNumber": index}
+             for number, season, index in [(1, 1, 9), (2, 2, 1)]]
+
+    def remote(request):
+        assert request.url.path == f"/Shows/{series_id}/Episodes"
+        assert request.url.params["UserId"] == config.jellyfin_user_id
+        assert request.url.params["StartItemId"] == ID
+        assert request.url.params["StartIndex"] == "1"
+        assert request.url.params["Limit"] == "3"
+        assert request.url.params["IsMissing"] == "false"
+        assert "MediaStreams" in request.url.params["Fields"].split(",")
+        return httpx.Response(200, json={"Items": after})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(remote)) as http:
+        jellyfin = Jellyfin(config, http)
+        jellyfin.ready = True
+        episodes = await jellyfin.following_episodes({"id": ID, "series_id": series_id}, 3)
+    assert [(item["season"], item["episode"]) for item in episodes] == [(1, 9), (2, 1)]
+    assert episodes[1]["series_id"] == series_id and episodes[1]["audio"][0]["index"] == 1
+
+
 async def test_disallowed_or_missing_tracks_rejected_before_playback(config):
     async with httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(200, json=ITEM))) as http:
         jellyfin = Jellyfin(config, http)
