@@ -5,8 +5,10 @@ import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Check, ChevronRight, CircleP
 import './style.css';
 
 type Track = { index: number; title: string };
+type TrackSelection = { audio: number | null; subtitle: number };
 type Item = { id: string; title: string; type: string; year?: number; overview: string; duration: number;
-  artwork?: string; series?: string; season?: number; episode?: number; audio: Track[]; subtitles: Track[] };
+  artwork?: string; series?: string; season?: number; episode?: number; audio: Track[]; subtitles: Track[];
+  track_selection?: Partial<TrackSelection> };
 type Row = Item & { key: string; requested_by: string; requester?: User };
 type Player = { current: Row | null; queue: Row[]; state: string; position: number; volume: number;
   audio: number | null; subtitle: number; channel_name: string | null; can_control: boolean; available: boolean;
@@ -79,6 +81,22 @@ function Poster({ item, large = false }: { item: Item; large?: boolean }) {
   </div>;
 }
 
+function TrackSelects({ item, selection, disabled, onChange }: {
+  item: Item; selection: TrackSelection; disabled: boolean; onChange: (selection: Partial<TrackSelection>) => void;
+}) {
+  if (!item.audio.length && !item.subtitles.length) return null;
+  return <div className="track-selects">
+    {item.audio.length > 0 && <label>Audio<select aria-label="Audio track" value={selection.audio ?? ''} disabled={disabled}
+      onChange={e => onChange({ audio: e.target.value === '' ? null : Number(e.target.value) })}>
+      <option value="">Default</option>{item.audio.map(t => <option key={t.index} value={t.index}>{t.title}</option>)}
+    </select></label>}
+    {item.subtitles.length > 0 && <label>Subtitles<select aria-label="Subtitle track" value={selection.subtitle} disabled={disabled}
+      onChange={e => onChange({ subtitle: Number(e.target.value) })}>
+      <option value={-1}>Off</option>{item.subtitles.map(t => <option key={t.index} value={t.index}>{t.title}</option>)}
+    </select></label>}
+  </div>;
+}
+
 function App() {
   const [user, setUser] = useState<User | null>(null);
   const [initializing, setInitializing] = useState(true);
@@ -99,11 +117,13 @@ function App() {
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [selected, setSelected] = useState<Item | null>(null);
+  const [trackChanges, setTrackChanges] = useState<Partial<TrackSelection>>({});
   const [connected, setConnected] = useState(false);
   const [seek, setSeek] = useState<number | null>(null);
   const dialogRef = useRef<HTMLDialogElement>(null);
   const parent = crumbs.at(-1);
   const controls = player.can_control && connected && !busy;
+  const selectedTracks = { audio: null, subtitle: -1, ...selected?.track_selection, ...trackChanges };
 
   useEffect(() => {
     api<{ instance: string; branding?: Brand }>('/api/meta').then(m => {
@@ -164,8 +184,8 @@ function App() {
     try {
       const result = await api<Player>('/api/action', { action, key: player.current?.key, ...fields });
       setPlayer(result);
-      if (action === 'add') setNotice('Added to the watch queue');
-      if (action === 'play') setSelected(null);
+      if (action === 'add' && player.current) setNotice('Added to the watch queue');
+      if (action === 'play' || action === 'add') setSelected(null);
     } catch (e) { setError((e as Error).message); }
     finally { setBusy(false); }
   }
@@ -178,8 +198,12 @@ function App() {
       });
       setQuery(''); setPage(0); return;
     }
-    try { setSelected(await api<Item>(`/api/items/${item.id}`)); }
-    catch (e) { setError((e as Error).message); }
+    try {
+      const details = await api<Item>(`/api/items/${item.id}`);
+      setError('');
+      setTrackChanges({});
+      setSelected(details);
+    } catch (e) { setError((e as Error).message); }
   }
 
   return <div className="app">
@@ -196,7 +220,7 @@ function App() {
       </div>
     </header>
     <main>
-      {error && <div className="alert" role="alert">{error}<button className="icon-button" aria-label="Dismiss error" onClick={() => setError('')}><X size={16} /></button></div>}
+      {error && !selected && <div className="alert" role="alert">{error}<button className="icon-button" aria-label="Dismiss error" onClick={() => setError('')}><X size={16} /></button></div>}
       {notice && <div className="toast" role="status"><Check size={17} />{notice}</div>}
       {!user ? <section className="welcome">
         <div className="welcome-copy"><span className="eyebrow">YOUR LIBRARY. YOUR PEOPLE.</span><h1>A little cinema.<br />A shared evening.</h1>
@@ -232,8 +256,7 @@ function App() {
                 <button className="play-button" aria-label={player.state === 'paused' || player.state === 'error' ? 'Resume' : 'Pause'} disabled={!controls} onClick={() => act(player.state === 'paused' || player.state === 'error' ? 'resume' : 'pause')}>{player.state === 'paused' || player.state === 'error' ? <Play size={23} fill="currentColor" /> : <Pause size={23} fill="currentColor" />}</button>
                 <button className="icon-button" aria-label="Skip title" disabled={!controls} onClick={() => act('skip')}><SkipForward size={22} /></button></div>
               <label className="volume"><Volume2 size={17} /><input aria-label="Shared volume" type="range" min="0" max="100" value={player.volume} disabled={!controls} onChange={e => setPlayer({ ...player, volume: Number(e.target.value) })} onPointerUp={e => act('volume', { value: Number(e.currentTarget.value) })} onKeyUp={e => act('volume', { value: Number(e.currentTarget.value) })} /><span>{player.volume}%</span></label>
-              <div className="track-selects"><label>Audio<select aria-label="Audio track" value={player.audio ?? ''} disabled={!controls} onChange={e => act('tracks', { audio: e.target.value ? Number(e.target.value) : null, subtitle: player.subtitle })}><option value="">Default</option>{player.current.audio.map(t => <option key={t.index} value={t.index}>{t.title}</option>)}</select></label>
-                <label>Subtitles<select aria-label="Subtitle track" value={player.subtitle} disabled={!controls} onChange={e => act('tracks', { audio: player.audio, subtitle: Number(e.target.value) })}><option value={-1}>Off</option>{player.current.subtitles.map(t => <option key={t.index} value={t.index}>{t.title}</option>)}</select></label></div>
+              <TrackSelects item={player.current} selection={player} disabled={!controls} onChange={changes => act('tracks', changes)} />
               <p className="shared-note">Playback and track choices are shared by everyone.</p>
             </> : <div className="empty-player"><div className="empty-screen"><Tv size={43} strokeWidth={1} /><span className="empty-screen-dot" /></div><h3>The screen is yours.</h3><p>Choose a movie or episode.<br />We’ll take care of the popcorn mood.</p></div>}
             {!connected && <p className="connection-note">Connecting to the player…</p>}
@@ -247,8 +270,29 @@ function App() {
       </>}
       <footer><span>Jellyfin library. {instance} company.</span><span>Made for a shared screen <span className="footer-star">✳</span></span></footer>
     </main>
-    <dialog ref={dialogRef} onCancel={() => setSelected(null)} onClick={e => { if (e.target === e.currentTarget) setSelected(null); }}>
-      {selected && <div className="detail"><button className="icon-button detail-close" aria-label="Close title details" onClick={() => setSelected(null)}><X size={21} /></button><Poster item={selected} large /><div className="detail-copy"><span className="eyebrow">{selected.series || (selected.type === 'Movie' ? 'FEATURE FILM' : 'EPISODE')}</span><h2>{selected.title}</h2><p className="detail-meta">{selected.year}{selected.duration ? ` · ${Math.round(selected.duration / 60)} min` : ''}</p><p className="overview">{selected.overview || 'No description available for this title.'}</p><div className="detail-buttons"><button className="button primary" disabled={!controls} onClick={() => act('play', { item_id: selected.id })}><Play size={17} fill="currentColor" />{player.current ? 'Play now' : 'Start watching'}</button><button className="button secondary" disabled={!controls} onClick={() => act('add', { item_id: selected.id })}><Plus size={18} />Add to queue</button></div>{!controls && <p className="shared-note">Join the active voice channel to play this title.</p>}</div></div>}
+    <dialog ref={dialogRef} aria-labelledby="title-details-heading" onCancel={() => setSelected(null)} onClick={e => { if (e.target === e.currentTarget) setSelected(null); }}>
+      {selected && <div className="detail">
+        <button className="icon-button detail-close" aria-label="Close title details" onClick={() => setSelected(null)}><X size={21} /></button>
+        <Poster item={selected} large />
+        <div className="detail-copy">
+          <span className="eyebrow">{selected.series || (selected.type === 'Movie' ? 'FEATURE FILM' : 'EPISODE')}</span>
+          <h2 id="title-details-heading">{selected.title}</h2>
+          <p className="detail-meta">{selected.year}{selected.duration ? ` · ${Math.round(selected.duration / 60)} min` : ''}</p>
+          <p className="overview">{selected.overview || 'No description available for this title.'}</p>
+          <TrackSelects item={selected} selection={selectedTracks} disabled={!controls}
+            onChange={changes => setTrackChanges(previous => ({ ...previous, ...changes }))} />
+          {error && <p className="player-error" role="alert">{error}</p>}
+          <div className="detail-buttons">
+            <button className="button primary" disabled={!controls} onClick={() => act('play', { item_id: selected.id, ...trackChanges })}>
+              <Play size={17} fill="currentColor" />{player.current ? 'Play now' : 'Start watching'}
+            </button>
+            <button className="button secondary" disabled={!controls} onClick={() => act('add', { item_id: selected.id, ...trackChanges })}>
+              <Plus size={18} />Add to queue
+            </button>
+          </div>
+          {!player.can_control && <p className="shared-note">Join the active voice channel to play this title.</p>}
+        </div>
+      </div>}
     </dialog>
   </div>;
 }

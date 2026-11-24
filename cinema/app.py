@@ -204,7 +204,8 @@ def create_app(config: Settings | None = None, *, start_services: bool = True) -
     @app.get("/api/items/{item_id}")
     async def item(request: Request, item_id: ItemId):
         await auth.require(request, fresh=True)
-        return await cached(metadata, ("item", item_id), lambda: jellyfin.item(item_id))
+        details = await cached(metadata, ("item", item_id), lambda: jellyfin.item(item_id))
+        return {**details, "track_selection": playback.preferred_tracks(details)}
 
     @app.get("/api/artwork/{item_id}")
     async def artwork(request: Request, item_id: ItemId):

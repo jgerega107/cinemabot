@@ -159,6 +159,7 @@ Allow outbound access to Jellyfin, the configured Fluxer API/Gateway, and the me
 
 - First play joins the requesting user's permitted voice channel. The existing session stays in that channel until stopped.
 - All present community members can play, enqueue, reorder/remove queued items, pause/resume, seek, skip, change shared volume/audio/subtitles, and stop/disconnect.
+- Select audio and subtitles in title details before playing or adding a title. Starting an episode adds up to three upcoming episodes in Jellyfin order, including the next season. Cinema remembers track choices per show until the bot restarts and uses default audio or subtitles off when a matching track is unavailable.
 - Queue capacity is 250 titles. Playback commands carry the current item key so stale controls cannot skip a new title.
 - A pause keeps the publication alive for late viewers. Seek/track changes replace buffered media at the chosen position.
 - After 60 seconds without human participants, the bot disconnects and clears its queue.

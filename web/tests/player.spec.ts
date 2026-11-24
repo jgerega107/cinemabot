@@ -47,7 +47,10 @@ async function setup(page: Page, options: { loggedIn?: boolean; control?: boolea
       if (action.action === 'play') { state.current = { ...items.find(i => i.id === action.item_id), key: 'current', requested_by: 'Alex', requester: { id: '123', name: 'Alex', avatar: '/test-avatar.svg' } }; state.state = 'playing'; state.channel_name = 'Movie night'; }
       if (action.action === 'pause') state.state = 'paused';
       if (action.action === 'resume') state.state = 'playing';
-      if (action.action === 'tracks') Object.assign(state, { audio: action.audio, subtitle: action.subtitle });
+      if (action.action === 'tracks') {
+        if ('audio' in action) state.audio = action.audio;
+        if ('subtitle' in action) state.subtitle = action.subtitle;
+      }
       await page.evaluate(s => { (window as any).__player = s; }, state);
       data = state;
     } else data = state;
@@ -79,6 +82,33 @@ test('browse, search, details and play', async ({ page }, testInfo) => {
   await expect(page.getByRole('dialog')).not.toBeVisible();
   await expect(page.getByRole('button', { name: 'Pause', exact: true })).toBeVisible();
   expect(actions[0]).toMatchObject({ action: 'play', item_id: items[0].id });
+});
+
+test('choose audio and subtitles before adding a title', async ({ page }) => {
+  const actions = await setup(page, { playing: true });
+  await page.goto('/');
+  await page.locator('.title-card').filter({ hasText: items[1].title }).click();
+  const dialog = page.getByRole('dialog', { name: items[1].title });
+  await dialog.getByLabel('Audio track').selectOption('1');
+  await dialog.getByLabel('Subtitle track').selectOption('2');
+  await dialog.getByRole('button', { name: 'Add to queue' }).click();
+  await expect(dialog).not.toBeVisible();
+  expect(actions).toEqual([{ action: 'add', key: 'current', item_id: items[1].id, audio: 1, subtitle: 2 }]);
+});
+
+test('show remembered episode tracks before playback', async ({ page }) => {
+  const actions = await setup(page);
+  const item = { ...items[1], type: 'Episode', track_selection: { audio: 1, subtitle: 2 } };
+  await page.route(`**/api/items/${item.id}`, route => route.fulfill({ json: item }));
+  await page.goto('/');
+  await page.locator('.title-card').filter({ hasText: item.title }).click();
+  const dialog = page.getByRole('dialog', { name: item.title });
+  await expect(dialog.getByLabel('Audio track')).toHaveValue('1');
+  await expect(dialog.getByLabel('Subtitle track')).toHaveValue('2');
+  await dialog.getByLabel('Subtitle track').selectOption('-1');
+  await dialog.getByRole('button', { name: 'Start watching' }).click();
+  await expect(dialog).not.toBeVisible();
+  expect(actions).toEqual([{ action: 'play', item_id: item.id, subtitle: -1 }]);
 });
 
 test('viewers outside voice cannot use controls', async ({ page }) => {

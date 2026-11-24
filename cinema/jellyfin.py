@@ -45,19 +45,24 @@ def artwork_sources(item: dict) -> list[tuple[str, str]]:
     return valid
 
 
+def public_track(stream: dict, default_title: str) -> dict:
+    return {"index": stream["Index"],
+            "title": stream.get("DisplayTitle") or stream.get("Title") or stream.get("Language") or default_title,
+            "language": stream.get("Language"), "name": stream.get("Title"),
+            "forced": bool(stream.get("IsForced")), "hearing_impaired": bool(stream.get("IsHearingImpaired"))}
+
+
 def public_item(item: dict) -> dict:
     """Explicit allowlist: Jellyfin DTOs can contain paths, URLs, and tokens."""
     return {
         "id": item["Id"], "title": item.get("Name", "Untitled"), "type": item.get("Type"),
         "year": item.get("ProductionYear"), "overview": item.get("Overview", ""),
         "duration": (item.get("RunTimeTicks") or 0) / TICKS,
-        "series": item.get("SeriesName"), "season": item.get("ParentIndexNumber"),
+        "series": item.get("SeriesName"), "series_id": item.get("SeriesId"), "season": item.get("ParentIndexNumber"),
         "episode": item.get("IndexNumber"),
         "artwork": f"/api/artwork/{item['Id']}" if artwork_sources(item) else None,
-        "audio": [{"index": s["Index"], "title": s.get("DisplayTitle") or s.get("Language") or "Audio"}
-                  for s in item.get("MediaStreams", []) if s.get("Type") == "Audio"],
-        "subtitles": [{"index": s["Index"], "title": s.get("DisplayTitle") or s.get("Language") or "Subtitles"}
-                      for s in item.get("MediaStreams", []) if s.get("Type") == "Subtitle"],
+        "audio": [public_track(s, "Audio") for s in (item.get("MediaStreams") or []) if s.get("Type") == "Audio"],
+        "subtitles": [public_track(s, "Subtitles") for s in (item.get("MediaStreams") or []) if s.get("Type") == "Subtitle"],
     }
 
 
@@ -146,6 +151,15 @@ class Jellyfin:
         result = await self.request("GET", f"/Users/{self.config.jellyfin_user_id}/Items", params=params)
         return {"items": [public_item(i) for i in result.get("Items", []) if i.get("Type") in CATALOG],
                 "total": result.get("TotalRecordCount", 0), "start": start}
+
+    async def following_episodes(self, episode: dict, limit: int) -> list[dict]:
+        series_id = UUID(episode["series_id"]).hex
+        result = await self.request("GET", f"/Shows/{series_id}/Episodes", params={
+            "UserId": self.config.jellyfin_user_id, "StartItemId": episode["id"],
+            "StartIndex": 1, "Limit": limit, "IsMissing": "false", "Fields": "Overview,MediaStreams",
+            "EnableUserData": "false",
+        })
+        return [public_item(item) for item in result.get("Items", []) if item.get("Type") == "Episode"]
 
     async def artwork(self, item_id: str) -> tuple[bytes, str]:
         item = await self.raw_item(item_id)
