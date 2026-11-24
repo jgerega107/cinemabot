@@ -60,7 +60,7 @@ test('sign-in screen and responsive layout', async ({ page }, testInfo) => {
   await setup(page, { loggedIn: false });
   await page.goto('/');
   await expect(page.getByRole('link', { name: 'Sign in with Gammy Land' })).toHaveAttribute('href', '/auth/login');
-  await expect(page.getByRole('heading', { name: /A little cinema/ })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Sign in to Cinema' })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.screenshot({ path: testInfo.outputPath('welcome.png'), fullPage: true });
 });
@@ -68,7 +68,9 @@ test('sign-in screen and responsive layout', async ({ page }, testInfo) => {
 test('browse, search, details and play', async ({ page }, testInfo) => {
   const actions = await setup(page);
   await page.goto('/');
-  await expect(page.getByRole('heading', { name: 'What’s on tonight?' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Library', exact: true })).toBeVisible();
+  await expect(page.getByText('No title playing.')).toBeVisible();
+  await expect(page.getByText('Queue is empty.')).toBeVisible();
   await expect(page.locator('.title-card')).toHaveCount(8);
   await page.screenshot({ path: testInfo.outputPath('library.png'), fullPage: true });
   await page.getByRole('textbox', { name: 'Search library' }).fill('Lighthouse');
