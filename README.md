@@ -28,6 +28,11 @@ Browser ──sign-in / controls──> Python backend
 4. Copy `.env.example` to a private `.env`, then set the instance origin, application credentials, and community ID. Optionally restrict `FLUXER_CHANNEL_IDS` to a comma-separated list.
 5. Forward HTTPS for `PUBLIC_ORIGIN` to the service's HTTP port 8080. Preserve the browser's `Origin` header. Disable proxy buffering for `/api/events` and allow long-lived responses.
 6. Set `TRUSTED_PROXY_CIDRS` to the actual proxy peer addresses seen by the container. Forward or append `X-Forwarded-For` at that proxy. The default trusts no forwarded headers, so users behind a proxy share its IP limit until configured. Do not trust every address or an untrusted network. Keep the container's `--no-proxy-headers` Uvicorn flag; the application validates the proxy chain itself.
+7. To share the player link on the bot profile, sign in to Fluxer as the application owner and open
+   **User Settings → Applications → your cinema application**. In **Bot profile**, add the URL from
+   `PUBLIC_ORIGIN` to **Bot bio**, such as `Watch together at https://cinema.example.com`. Save, then
+   open CinemaBot's profile from the community member list to verify the player URL. Update the bio
+   if the player URL changes.
 
 OAuth uses `identify`, authorization codes, state, and S256 PKCE. Browsers receive an eight-hour HTTP-only session cookie. No Fluxer or Jellyfin tokens are returned to the browser. Every control checks current community membership and voice presence on the server. Browsing requires community membership; controlling the active session requires being in the same voice channel as the bot.
 
@@ -233,15 +238,9 @@ Current and queued titles include the requester's community display name and
 avatar, captured from verified membership when the title is requested. Community
 avatars take precedence over global avatars; missing images show initials.
 
-Set the bot's public profile bio in **User Settings → Applications → your cinema
-application → Bot** to include the control UI URL, for example:
-`Watch together: https://cinema.example.com`. Bot profile edits require the
-application owner's session; the service's bot token cannot update its own bio.
-
 Only View Channel, Connect, and Stream are needed for the screen-share tracks.
 Speak controls microphone audio, which this bot does not publish.
 
 The bot's custom status shows "Watching <title>" only while a title is actively
 playing. Pausing, buffering/loading, stopping, or a playback error clears it.
 Updates are deduplicated, checked every two seconds, and refreshed on reconnect.
-The public player URL belongs in the owner-managed profile bio, not the status.
