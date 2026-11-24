@@ -144,8 +144,20 @@ class Fluxer:
             self.connection_id = grant.get("connection_id")
             if not self.connection_id or not grant.get("endpoint") or not grant.get("token") or grant.get("p2p"):
                 raise Problem(503, "This voice channel did not supply a supported LiveKit grant.")
-            endpoint(grant["endpoint"], {"wss", "ws"} if self.config.allow_insecure_local else {"wss"})
-            return {k: grant[k] for k in ("endpoint", "token", "e2ee_key") if grant.get(k)}
+            schemes = {"wss", "https"}
+            if self.config.allow_insecure_local:
+                schemes.update({"ws", "http"})
+            voice_url = grant["endpoint"]
+            endpoint(voice_url, schemes)
+            parsed = urlsplit(voice_url)
+            # Fluxer can advertise an HTTP(S) base URL for LiveKit signaling.
+            websocket_scheme = {"https": "wss", "http": "ws"}.get(parsed.scheme)
+            if websocket_scheme:
+                voice_url = parsed._replace(scheme=websocket_scheme).geturl()
+            connection_grant = {"endpoint": voice_url, "token": grant["token"]}
+            if grant.get("e2ee_key"):
+                connection_grant["e2ee_key"] = grant["e2ee_key"]
+            return connection_grant
         except TimeoutError:
             raise Problem(503, "Voice join timed out. Check View Channel, Connect, and Stream permissions.") from None
         finally:
