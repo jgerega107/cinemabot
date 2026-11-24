@@ -51,7 +51,7 @@ All viewers share this account's catalog, audio track, and burned-in subtitles. 
 
 Set `JELLYFIN_FORCE_TRANSCODE=true` to always request H.264 up to 1080p/30 at `VIDEO_BITRATE`. This is useful when directly decoding high-resolution HEVC/AV1 overloads the bot. It adds server work and another lossy encode; configure Jellyfin hardware acceleration separately. **Existing `.env` files and ConfigMaps with `true` keep their behavior:** change the setting to `false` and recreate/restart the bot to adopt direct playback.
 
-Direct playback here avoids the **Jellyfin** transcode. FFmpeg decodes the source and interleaves video and audio by presentation timestamp before the worker paces them. FFmpeg encodes H.264 and Opus. The LiveKit publisher sends those samples on the bot’s existing screen-share tracks. GPU acceleration applies to H.264 encoding.
+Direct playback here avoids the **Jellyfin** transcode. FFmpeg decodes the source and interleaves video and audio by presentation timestamp before the worker paces them. FFmpeg encodes H.264 and Opus. The LiveKit publisher sends those samples on the bot's existing screen-share tracks. GPU acceleration applies to H.264 encoding.
 
 ## HTTP on a trusted LAN
 
