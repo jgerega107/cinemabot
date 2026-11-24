@@ -103,6 +103,39 @@ async def test_catalog_and_playback_wait_for_account_verification(config):
         assert len(requests) == 2
 
 
+async def test_catalog_letter_filters_jellyfin_before_pagination_and_separates_cache(app, signed_in, monkeypatch):
+    upstream_queries = []
+    parent = "c" * 32
+
+    def upstream(request):
+        if request.url.path.endswith(parent):
+            return httpx.Response(200, json={"Id": parent, "Type": "CollectionFolder"})
+        params = request.url.params
+        upstream_queries.append(params)
+        prefix = params.get("NameStartsWith", "All")
+        return httpx.Response(200, json={"Items": [{**ITEM, "Name": f"{prefix} film"}], "TotalRecordCount": 41})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(upstream)) as http:
+        jellyfin = app.state.jellyfin
+        monkeypatch.setattr(jellyfin, "http", http)
+        jellyfin.ready = True
+        scope = {"q": "film", "parent": parent, "start": 40}
+        for letter in ("A", "Z", "A", None):
+            params = {**scope, "letter": letter} if letter else scope
+            response = await signed_in.get("/api/items", params=params)
+            assert response.status_code == 200
+            assert response.json()["items"][0]["title"] == f"{letter or 'All'} film"
+            assert response.json()["total"] == 41
+        assert (await signed_in.get("/api/items", params={"letter": "AZ"})).status_code == 422
+
+    assert [query.get("NameStartsWith") for query in upstream_queries] == ["A", "Z", None]
+    for query in upstream_queries:
+        assert query["SearchTerm"] == "film"
+        assert query["ParentId"] == parent
+        assert query["StartIndex"] == "40"
+        assert query["Limit"] == "40"
+
+
 async def test_hdr_reported_only_by_playback_info_forces_transcode(config):
     config.jellyfin_force_transcode = False
     bodies = []
